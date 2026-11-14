@@ -256,3 +256,138 @@ test("progress, errors and advisory pivots persist without restructuring the pat
     close(host, directory);
   }
 });
+
+test("enabled graph context reaches teacher/practice tool briefs and search, never launch prompts or prober", async () => {
+  const directory = temporaryDirectory();
+  const fixture = makePath();
+  const path = { ...fixture, modules: fixture.modules.map(module => ({ ...module, nodes: module.nodes.map(node => node.id === "n-concept"
+    ? { ...node, title: "Concurrency", goal: "Distinguish concurrency from parallelism" } : node) })) };
+  const store = openLearningPathStore(directory);
+  store.savePath(path);
+  const proposition = { id: "prior", name: "Concurrency", statement: "Concurrency allows independent tasks to overlap.", aliases: [], createdAt: AT, provenance: [] };
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-1"), chat("practice", "practice"), chat("unlinked")], graph: () => [proposition] });
+  try {
+    const offBrief = await runTool(host.nativeTools("chat-1", "teacher"), "learning_path_get_brief", {});
+    assert.doesNotMatch(offBrief.text, /Graph context/);
+    await host.call("settings.save", { artifactDefaults: {}, graphContextEnabled: true });
+    const tools = host.nativeTools("chat-1", "teacher");
+    const brief = await runTool(tools, "learning_path_get_brief", {});
+    assert.match(brief.text, /Concurrency allows independent tasks to overlap/);
+    const savedBeforeSearch = openLearningPathStore(directory).path(path.id);
+    const result = await runTool(tools, "learning_path_search_graph", { query: "concurrency" });
+    assert.deepEqual(openLearningPathStore(directory).path(path.id), savedBeforeSearch, "reads never mutate path or progression");
+    assert.equal(result.isError, false);
+    assert.deepEqual(result.details.propositions, [{ id: "prior", statement: proposition.statement }]);
+    assert.match(result.text, /never state a connection before the learner has tried/);
+    assert.equal(host.nativeTools("chat-1", "prober").length, 4);
+    const prober = await runTool(host.nativeTools("chat-1", "prober"), "learning_path_get_brief", {});
+    assert.equal(prober.text, offBrief.text);
+    assert.deepEqual(host.nativeTools("unlinked", "teacher"), []);
+    await host.call("sessions.link", { pathId: path.id, nodeId: "n-concept", chatId: "practice", kind: "practice" });
+    assert.ok(host.nativeTools("practice", "practice").some(t => t.name === "learning_path_search_graph"));
+    const prepared = await host.call<{ prompt: string }>("sessions.prepare", { pathId: path.id, nodeId: "n-concept", kind: "teaching" });
+    assert.doesNotMatch(prepared.prompt, /Concurrency allows independent tasks to overlap|Graph context/);
+    assert.ok(host.instructions.some(entry => !entry.agents.includes("prober") && /Prefer unlabelled/.test(entry.text)));
+  } finally { close(host, directory); }
+});
+
+test("graph context safely falls back and stale tools cannot read after disabling, unlinking or deletion", async () => {
+  const directory = temporaryDirectory();
+  openLearningPathStore(directory).savePath(makePath());
+  let mode: "ready" | "empty" | "throw" | "missing" = "ready";
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-1")], graph: () => {
+    if (mode === "throw") throw new Error("graph locked");
+    if (mode === "missing") return undefined as never;
+    return mode === "empty" ? [] : [{ id: "p1", name: "First principles", statement: "First principles reconstruct a concept from its foundations.", aliases: [], createdAt: AT, provenance: [] }];
+  } });
+  try {
+    const baseTools = host.nativeTools("chat-1", "teacher");
+    const baseline = await runTool(baseTools, "learning_path_get_brief", {});
+    await host.call("settings.save", { artifactDefaults: {}, graphContextEnabled: true });
+    const tools = host.nativeTools("chat-1", "teacher");
+    assert.equal(tools.length, 5);
+    for (const fallback of ["empty", "throw", "missing"] as const) {
+      mode = fallback;
+      assert.deepEqual(host.nativeTools("chat-1", "teacher").map(t => t.name), baseTools.map(t => t.name));
+      assert.equal((await runTool(tools, "learning_path_get_brief", {})).text, baseline.text);
+      assert.deepEqual((await runTool(tools, "learning_path_search_graph", { query: "principles" })).details.propositions, []);
+    }
+    mode = "ready";
+    await host.call("settings.save", { artifactDefaults: {}, graphContextEnabled: false });
+    assert.equal(host.instructions.length, 1);
+    assert.deepEqual((await runTool(tools, "learning_path_search_graph", { query: "principles" })).details.propositions, []);
+    assert.equal((await runTool(tools, "learning_path_get_brief", {})).text, baseline.text);
+    await host.call("settings.save", { artifactDefaults: {}, graphContextEnabled: true });
+    await host.call("sessions.unlink", { pathId: "path-linear-algebra", nodeId: "n-concept", chatId: "chat-1" });
+    assert.deepEqual((await runTool(tools, "learning_path_search_graph", { query: "principles" })).details.propositions, []);
+    await host.call("sessions.link", { pathId: "path-linear-algebra", nodeId: "n-concept", chatId: "chat-1", kind: "teaching" });
+    host.removeChat("chat-1");
+    assert.deepEqual((await runTool(tools, "learning_path_search_graph", { query: "principles" })).details.propositions, []);
+    await host.cleanup();
+    assert.equal(host.instructions.length, 0);
+  } finally { close(host, directory); }
+});
+
+test("graph search matches recorded aliases and bounds results, fields, scan and invalid inputs", async () => {
+  const directory = temporaryDirectory();
+  const store = openLearningPathStore(directory);
+  store.savePath(makePath());
+  store.saveSettings({ artifactDefaults: {}, graphContextEnabled: true });
+  const proposition = (id: string, statement: string, aliases: string[] = []) => ({ id, name: "display label", statement, aliases, createdAt: AT, provenance: [] });
+  const propositions = [
+    proposition("alias", "Separate tasks can advance during overlapping intervals.", ["concurrencia"]),
+    ...Array.from({ length: 7 }, (_, i) => proposition(`bounded-${i}`, `bounded ${"x".repeat(5_000)}`)),
+    ...Array.from({ length: 9_992 }, (_, i) => proposition(`none-${i}`, "Unrelated recorded evidence.")),
+    proposition("past-scan", "beyondscan match"),
+  ];
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-1")], graph: () => propositions });
+  try {
+    const tools = host.nativeTools("chat-1", "teacher");
+    const alias = await runTool(tools, "learning_path_search_graph", { query: "CONCURRENCIA" });
+    assert.deepEqual(alias.details.propositions, [{ id: "alias", statement: "Separate tasks can advance during overlapping intervals." }]);
+    const bounded = await runTool(tools, "learning_path_search_graph", { query: "bounded" });
+    const entries = bounded.details.propositions as { id: string; statement: string }[];
+    assert.equal(entries.length, 5);
+    assert.ok(entries.every(entry => entry.statement.length <= 600));
+    assert.ok(bounded.text.length < 8_000);
+    assert.deepEqual((await runTool(tools, "learning_path_search_graph", { query: "beyondscan" })).details.propositions, []);
+    assert.deepEqual((await runTool(tools, "learning_path_search_graph", { query: "the and of" })).details.propositions, []);
+    for (const query of ["", "x".repeat(501), 123]) {
+      assert.equal((await runTool(tools, "learning_path_search_graph", { query })).isError, true);
+    }
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await assert.rejects(() => toolByName(tools, "learning_path_search_graph").execute("cancelled", { query: "bounded" }, cancelled.signal), /shutting down/);
+  } finally { close(host, directory); }
+});
+
+test("a frozen teacher brief stops graph access if the chat is relinked as practice", async () => {
+  const directory = temporaryDirectory();
+  const store = openLearningPathStore(directory);
+  store.savePath(makePath());
+  store.saveSettings({ artifactDefaults: {}, graphContextEnabled: true });
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-1")], graph: () => [{ id: "private", name: "First principles", statement: "First principles are private recorded context.", aliases: [], createdAt: AT, provenance: [] }] });
+  try {
+    const teacherTools = host.nativeTools("chat-1", "teacher");
+    await host.call("sessions.unlink", { pathId: "path-linear-algebra", nodeId: "n-concept", chatId: "chat-1" });
+    host.addChat(chat("chat-1", "practice"));
+    await host.call("sessions.link", { pathId: "path-linear-algebra", nodeId: "n-concept", chatId: "chat-1", kind: "practice" });
+    const stale = await runTool(teacherTools, "learning_path_get_brief", {});
+    assert.doesNotMatch(stale.text, /private recorded context/);
+    assert.deepEqual((await runTool(teacherTools, "learning_path_search_graph", { query: "principles" })).details.propositions, []);
+  } finally { close(host, directory); }
+});
+
+test("recorded aliases remain searchable when the proposition statement exceeds its matching budget", async () => {
+  const directory = temporaryDirectory();
+  const store = openLearningPathStore(directory);
+  store.savePath(makePath());
+  store.saveSettings({ artifactDefaults: {}, graphContextEnabled: true });
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-1")], graph: () => [{
+    id: "long", name: "Long proposition", statement: `A long recorded proposition ${"x".repeat(5_000)}`, aliases: ["concurrency"], createdAt: AT, provenance: [],
+  }] });
+  try {
+    const result = await runTool(host.nativeTools("chat-1", "teacher"), "learning_path_search_graph", { query: "concurrency" });
+    assert.equal((result.details.propositions as unknown[]).length, 1);
+  } finally { close(host, directory); }
+});

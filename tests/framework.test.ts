@@ -187,3 +187,42 @@ test("a node with no unresolved errors still tells the session to probe", () => 
   assert.match(holistic.text, /No unresolved error is on record/);
   assert.deepEqual(holistic.watchpoints, []);
 });
+
+test("graph context in agent briefs is opt-in, relevant, bounded and explicitly withheld until an attempt", () => {
+  const path = makePath();
+  const node = nodeOf(path, "n-contrast");
+  (node as { title: string }).title = "Concurrency and parallelism";
+  const propositions = [
+    { id: "irrelevant", statement: "Photosynthesis converts light into chemical energy.", aliases: [] },
+    { id: "alias", statement: "Independent tasks can make progress in overlapping intervals.", aliases: ["Concurrency"] },
+    ...Array.from({ length: 12 }, (_, i) => ({ id: `p-${i}`, statement: "Concurrency is not the same as parallelism.", aliases: [] })),
+  ].map(p => ({ ...p, name: p.id, createdAt: "2026-01-01T00:00:00Z", provenance: [] }));
+  const base = { path, nodeId: node.id, kind: "teaching" as const };
+  const baseline = buildChildSessionBrief(base).text;
+  assert.equal(buildChildSessionBrief({ ...base, graphPropositions: propositions }).text, baseline);
+  assert.equal(buildChildSessionBrief({ ...base, settings: { artifactDefaults: {}, graphContextEnabled: true }, graphPropositions: [] }).text, baseline);
+  const brief = buildChildSessionBrief({ ...base, settings: { artifactDefaults: {}, graphContextEnabled: true }, graphPropositions: propositions });
+  assert.match(brief.text, /## Graph context — agent only/);
+  assert.doesNotMatch(brief.text, /Photosynthesis/);
+  assert.equal((brief.text.match(/"id":/g) ?? []).length, 5);
+  assert.match(brief.text, /never state a connection before the learner has tried/i);
+  assert.match(brief.text, /Prefer unlabelled problems/);
+  assert.match(brief.text, /quick recall question/);
+  assert.match(brief.text, /No skipping units/);
+});
+
+test("graph brief relevance includes the canonical source anchor and preserves light-use/map rules", () => {
+  const path = makePath();
+  const proposition = { id: "source", name: "Source context", statement: "OSTEP describes how operating systems virtualize resources.", aliases: [], createdAt: "2026-01-01T00:00:00Z", provenance: [] };
+  const settings = { artifactDefaults: {}, graphContextEnabled: true };
+  const graphPropositions = [proposition];
+  for (const nodeId of ["n-holistic", "n-skill", "n-bridge"]) {
+    const brief = buildChildSessionBrief({ path, nodeId, kind: "practice", settings, graphPropositions });
+    assert.match(brief.text, /OSTEP describes how operating systems virtualize resources/);
+    assert.match(brief.text, /For skill and bridge units, use graph context only for recall checks and watchpoints/);
+    assert.match(brief.text, /learner draws first/);
+    assert.match(brief.text, /artifactNote/);
+    assert.match(brief.text, /other artifacts, check connections in conversation before consolidated/);
+    assert.doesNotMatch(brief.text, PACING);
+  }
+});

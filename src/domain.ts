@@ -251,6 +251,8 @@ export interface PluginSettings {
   readonly artifactDefaults: Partial<Record<NodeType, ArtifactType>>;
   /** Absent means follow the host strong slot, the default. */
   readonly architect?: ArchitectPreferences;
+  /** Experimental read-only graph context for teaching/practice; absent is off. */
+  readonly graphContextEnabled?: boolean;
 }
 
 export interface ValidationIssue {
@@ -717,9 +719,13 @@ function readPluginSettingsValue(value: unknown): PluginSettings {
     record.architect === undefined
       ? undefined
       : readArchitectPreferences(record.architect, `${path}.architect`);
+  const graphContextEnabled = record.graphContextEnabled === undefined
+    ? undefined
+    : readBoolean(record.graphContextEnabled, `${path}.graphContextEnabled`);
   return {
     artifactDefaults,
     ...(architect === undefined ? {} : { architect }),
+    ...(graphContextEnabled === undefined ? {} : { graphContextEnabled }),
   };
 }
 

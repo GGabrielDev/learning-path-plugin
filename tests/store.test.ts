@@ -326,3 +326,14 @@ test("Architect model config round-trips and rejects invalid choices", (t) => {
   assert.throws(() => store.saveArchitectModel(null), /must be an object/);
   assert.deepEqual(openLearningPathStore(dir).architectModel(), model);
 });
+
+test("graph context is opt-in, persists, and rejects non-boolean settings", (t) => {
+  const dir = directory(t);
+  const store = openLearningPathStore(dir);
+  assert.equal(store.settings().graphContextEnabled ?? false, false);
+  store.saveSettings({ artifactDefaults: {}, graphContextEnabled: true });
+  assert.equal(openLearningPathStore(dir).settings().graphContextEnabled, true);
+  assert.throws(() => store.saveSettings({ artifactDefaults: {}, graphContextEnabled: "true" }), DomainValidationError);
+  store.saveSettings({ artifactDefaults: {}, graphContextEnabled: false });
+  assert.equal(openLearningPathStore(dir).settings().graphContextEnabled, false);
+});

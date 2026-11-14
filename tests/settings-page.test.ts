@@ -187,3 +187,51 @@ test("path deletion asks for confirmation and never touches native chats", async
     fixture.restore();
   }
 });
+
+test("experimental graph context toggle defaults off, saves, and restores after failure", async () => {
+  const fixture = createViewFixture();
+  try {
+    mountSettingsPage(fixture.context, fixture.root, fixture.context.signal);
+    await fixture.flush();
+    const toggle = () => artifactRow(liveRows(fixture, "graph-context-enabled"), "graph-context-enabled");
+    assert.equal(toggle().value, false);
+    assert.match(toggle().description, /questions.*attempt/i);
+    await toggle().onChange(true);
+    await fixture.flush();
+    assert.equal(fixture.settings.graphContextEnabled, true);
+    assert.equal(toggle().value, true);
+    await toggle().onChange(false);
+    await fixture.flush();
+    assert.equal(toggle().value, false);
+    const originalCall = fixture.context.call;
+    fixture.context.call = async () => { throw new Error("disk unavailable"); };
+    await toggle().onChange(true);
+    await fixture.flush();
+    assert.equal(toggle().value, false);
+    assert.match(fixture.root.textContent ?? "", /Could not save settings: disk unavailable/);
+    fixture.context.call = originalCall;
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("graph toggle is disabled while its save is in flight", async () => {
+  const fixture = createViewFixture();
+  try {
+    mountSettingsPage(fixture.context, fixture.root, fixture.context.signal);
+    await fixture.flush();
+    const toggle = () => artifactRow(liveRows(fixture, "graph-context-enabled"), "graph-context-enabled");
+    const originalCall = fixture.context.call;
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    fixture.context.call = async (...args) => { await gate; return originalCall(...args); };
+    const pending = toggle().onChange(true);
+    assert.equal(toggle().disabled, true);
+    assert.match(fixture.root.textContent ?? "", /Saving/);
+    finish();
+    await pending;
+    await fixture.flush();
+    assert.equal(toggle().disabled, false);
+    assert.equal(toggle().value, true);
+  } finally { fixture.restore(); }
+});
