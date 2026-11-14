@@ -11,9 +11,11 @@ Tested backend SHA256: `87b7cfa28f8656d435f8866adef60379c8fe52a71fbe6b1b2e4cafd8
 - The synthetic unit's title/source anchor were simply “Velora,” with goal “Velora.” The opening prompt contained **no operation definitions or graph propositions**. Every retrieved entry used in these excerpts came from the synthetic fixture, verified privately by proposition IDs.
 - Built-in native graph readers were disabled through the isolated host's supported settings API. Practice obtained the toy-system facts through `learning_path_get_brief`, not `list_sessions`, `list_propositions`, learner-supplied answers, or source-file reads.
 - Raw native records and SSE traces remain private outside the repository. Tool responses, hidden model solutions, reasoning, identifiers, source paths, and all original chat/graph text are omitted here.
-- The teaching session reached Teacher through a real native `probe_done` and automatic transition, without fabricated messages or tool results. Its setup/probe exchanges began on an earlier candidate bundle; the map-review turn quoted below re-read the brief and executed graph search on the final corrected bundle named above. The four Practice turns and off/default/Prober checks were run on that final bundle.
+- The teaching session reached Teacher through a real native `probe_done` and automatic transition, without fabricated messages or tool results. Its setup/probe exchanges began on an earlier candidate bundle; the map-review turn quoted below re-read the brief and executed graph search on the final corrected bundle named above. The four Practice turns, the separate recall exchange, and off/default/Prober checks were run on that final bundle.
 
-## 1. Graph-informed quick check; feedback only after the attempt
+## 1. Graph-informed reasoning check; feedback only after the attempt
+
+This first example supplies operation definitions and tests their implications; it is **not a prior-memory recall check**. The separate [genuine recall exchange](recall-check.md) asks about a recorded operation without first supplying its definition or invariant.
 
 The first Practice turn called `learning_path_get_brief`, received a bounded agent-only section with five synthetic graph entries, then called native `problem`. It did not state the total-preservation connection as an answer before asking. The hidden model solution was not shown to the learner.
 
