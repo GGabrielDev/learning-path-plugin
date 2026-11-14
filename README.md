@@ -178,8 +178,11 @@ raw tool messages, or a guarantee that an LLM will never disclose a connection.
 
 Retrieval uses the public `ctx.learning.graph().propositions` projection, not
 transcripts or graph-file reads. It matches the unit title, goal and source anchor
-against statements and recorded aliases, across all recorded sessions/paths. Each
-search scans at most 10,000 propositions and returns at most five, with statements
+against statements and recorded aliases, across all recorded sessions/paths.
+Propositions recorded exclusively in the active chat are excluded before ranking;
+mixed, other-source and unknown provenance remain eligible. Title, goal and
+source anchor each have a separate bounded query budget so long goals cannot hide
+the anchor. Each search scans at most 10,000 propositions and returns at most five, with statements
 capped at 600 characters and ids at 128. Query text is bounded; matching text and
 alias counts are capped. The initial SDK graph snapshot is still complete because
 the API has no pagination. Matches are lexical hints, not semantic equivalence;

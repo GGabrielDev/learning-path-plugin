@@ -194,7 +194,7 @@ function briefTool(
         kind,
         settings: store.settings(),
         ...(agent !== "prober" && kindMatchesAgent(kind, agent) && store.settings().graphContextEnabled === true
-          ? { graphPropositions: readGraphPropositions(ctx) }
+          ? { graphPropositions: readGraphPropositions(ctx), currentChatId: chatId }
           : {}),
       });
       const catalog = artifactCatalogEntry(brief.artifact.type);
@@ -508,7 +508,7 @@ function graphSearchTool(
       try {
         const params = readObject(rawParams);
         const query = readTrimmedText(params.query, "query", 500);
-        const propositions = searchGraph(query, readGraphPropositions(ctx));
+        const propositions = searchGraph(query, readGraphPropositions(ctx), context.chatId);
         if (propositions.length === 0) {
           return textResult({ propositions }, "No matching recorded evidence. Continue normally; absence is not evidence of a knowledge gap.");
         }

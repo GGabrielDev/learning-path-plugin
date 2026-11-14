@@ -262,6 +262,8 @@ export interface ChildSessionBriefInput {
   readonly settings?: PluginSettings | null;
   /** Agent-tool delivery only: never pass graph data into a learner-visible opening prompt. */
   readonly graphPropositions?: readonly GraphNode[];
+  /** Exclude propositions recorded exclusively in this agent session. */
+  readonly currentChatId?: string;
   /** Optional override for the loose priming hook; a loose suggestion either way. */
   readonly primingHook?: string;
 }
@@ -360,7 +362,7 @@ export function buildChildSessionBrief(input: ChildSessionBriefInput): ChildSess
   ];
 
   const graphLines = input.settings?.graphContextEnabled === true
-    ? graphContextForNode(node, input.graphPropositions ?? [])
+    ? graphContextForNode(node, input.graphPropositions ?? [], input.currentChatId)
     : [];
 
   const text = [

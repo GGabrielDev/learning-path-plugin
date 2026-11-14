@@ -6,6 +6,7 @@ import {
   DomainValidationError,
   ERROR_CATEGORIES,
   NODE_TYPES,
+  parseLearningPath,
 } from "../src/domain.ts";
 import {
   buildArchitectSystemPrompt,
@@ -225,4 +226,16 @@ test("graph brief relevance includes the canonical source anchor and preserves l
     assert.match(brief.text, /other artifacts, check connections in conversation before consolidated/);
     assert.doesNotMatch(brief.text, PACING);
   }
+});
+
+test("a valid long goal cannot crowd the source anchor out of graph relevance", () => {
+  const fixture = makePath();
+  const path = parseLearningPath({ ...fixture, modules: fixture.modules.map(module => ({ ...module, nodes: module.nodes.map(node => node.id === "n-concept"
+    ? { ...node, goal: "foundations ".repeat(333).trim(), sourceAnchor: { reference: "Velora", section: "Conservation" } } : node) })) });
+  const brief = buildChildSessionBrief({
+    path, nodeId: "n-concept", kind: "teaching", settings: { artifactDefaults: {}, graphContextEnabled: true },
+    graphPropositions: [{ id: "anchor-only", name: "Earlier source", statement: "Velora preserves quantities through reversible transformations.", aliases: [], createdAt: "2026-01-01T00:00:00Z", provenance: [] }],
+  });
+  assert.match(brief.text, /## Graph context — agent only/);
+  assert.match(brief.text, /Velora preserves quantities through reversible transformations/);
 });

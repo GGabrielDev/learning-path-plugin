@@ -391,3 +391,31 @@ test("recorded aliases remain searchable when the proposition statement exceeds 
     assert.equal((result.details.propositions as unknown[]).length, 1);
   } finally { close(host, directory); }
 });
+
+test("graph briefs and search exclude current-chat-only evidence before ranking but retain mixed and unknown provenance", async () => {
+  const directory = temporaryDirectory();
+  const fixture = makePath();
+  const path = { ...fixture, modules: fixture.modules.map(module => ({ ...module, nodes: module.nodes.map(node => node.id === "n-concept"
+    ? { ...node, title: "Concurrency", goal: "Distinguish concurrency from parallelism" } : node) })) };
+  const store = openLearningPathStore(directory);
+  store.savePath(path);
+  store.saveSettings({ artifactDefaults: {}, graphContextEnabled: true });
+  const proposition = (id: string, statement: string, chatIds: string[]) => ({ id, name: id, statement, aliases: [], createdAt: AT,
+    provenance: chatIds.map(chatId => ({ chatId, messageId: "message-1" })) });
+  const propositions = [
+    ...Array.from({ length: 6 }, (_, i) => proposition(`current-${i}`, "Concurrency parallelism CURRENT_ONLY evidence.", ["chat-1"])),
+    proposition("mixed", "Concurrency MIXED evidence.", ["chat-1", "earlier-chat"]),
+    proposition("other", "Concurrency EARLIER evidence.", ["earlier-chat"]),
+    proposition("unknown", "Concurrency UNKNOWN evidence.", []),
+    proposition("imported", "Concurrency IMPORTED evidence.", ["src_notes"]),
+  ];
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-1")], graph: () => propositions });
+  try {
+    const tools = host.nativeTools("chat-1", "teacher");
+    const brief = await runTool(tools, "learning_path_get_brief", {});
+    assert.doesNotMatch(brief.text, /CURRENT_ONLY/);
+    for (const marker of ["MIXED", "EARLIER", "UNKNOWN", "IMPORTED"]) assert.match(brief.text, new RegExp(marker));
+    const search = await runTool(tools, "learning_path_search_graph", { query: "concurrency parallelism" });
+    assert.deepEqual((search.details.propositions as { id: string }[]).map(entry => entry.id), ["imported", "mixed", "other", "unknown"]);
+  } finally { close(host, directory); }
+});
