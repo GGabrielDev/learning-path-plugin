@@ -103,7 +103,7 @@ credential files inside the package.
 The build writes only `dist/`. It refuses a symlinked `dist/` and a misplaced
 `dist/data/`, and never touches a sibling `data/` directory. At runtime the
 plugin writes through the host-provided `ctx.dataDirectory`:
-`learning-paths.json`, `settings.json`, `architect.json` and `sources/`. It leaves
+`paths/<pathId>.json`, `settings.json`, `architect.json` and `sources/`. It leaves
 host-reserved `agents/`, `tasks/` and `usage.jsonl` alone, refuses newer or
 corrupt records instead of wiping them, and never deletes native chats or
 Knowledge Graph records.

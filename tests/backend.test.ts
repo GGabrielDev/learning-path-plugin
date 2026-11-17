@@ -575,6 +575,7 @@ test("activation abort cancels Architect runs and fences later writes", async (t
   await assert.rejects(h.call("sources.save", { name: "x.md", markdown: "# X" }), /shutting down/);
   await assert.rejects(h.runTool("save_learning_path", rawPath()), /shutting down/);
   assert.equal(fs.existsSync(path.join(h.dataDirectory, "learning-paths.json")), false);
+  assert.equal(fs.existsSync(path.join(h.dataDirectory, "paths")), false);
 
   await h.cleanup();
   assert.equal(h.handlers.size, 0);
