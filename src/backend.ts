@@ -43,6 +43,7 @@ import type {
   PluginSettings,
 } from "./domain.ts";
 import { buildChildSessionBrief } from "./framework.ts";
+import { exportLearningPath } from "./export.ts";
 import { registerNativeBridge } from "./native-bridge.ts";
 import {
   addChildLink,
@@ -489,6 +490,19 @@ export function activate(ctx: PluginBackendContext): void {
   handle("paths.get", (input) => {
     const id = readText(object(input, "paths.get").id, "id", { max: 128 });
     return { path: store.path(id) };
+  });
+
+  handle("paths.export", (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "paths.export");
+    const rawId = value.pathId ?? value.id;
+    const pathId = readText(rawId, "pathId", { max: 128 });
+    if (value.format !== "json" && value.format !== "markdown") {
+      throw new Error('format must be "json" or "markdown".');
+    }
+    const path = store.path(pathId);
+    if (!path) throw new Error(`Unknown path: ${pathId}`);
+    return exportLearningPath(path, value.format, store.settings());
   });
 
   // ---- Settings -----------------------------------------------------------

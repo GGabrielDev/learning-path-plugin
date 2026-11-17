@@ -659,3 +659,59 @@ test("paths.updateNode records progression and per-node artifacts without rewrit
     /Unknown path/,
   );
 });
+
+test("paths.export renders validated JSON and Markdown with download metadata", async (t) => {
+  const h = host(t);
+  await createConversation(h);
+  await h.runTool("save_learning_path", rawPath());
+
+  const json = await h.call<{
+    pathId: string;
+    title: string;
+    format: string;
+    filename: string;
+    mimeType: string;
+    content: string;
+  }>("paths.export", { pathId: "path-linear-algebra", format: "json" });
+  assert.equal(json.pathId, "path-linear-algebra");
+  assert.equal(json.title, "Linear algebra from canon");
+  assert.equal(json.format, "json");
+  assert.equal(json.filename, "linear-algebra-from-canon.json");
+  assert.equal(json.mimeType, "application/json");
+  assert.equal(JSON.parse(json.content).id, "path-linear-algebra");
+  assert.match(json.content, /"modules"/);
+
+  const markdown = await h.call<typeof json>("paths.export", {
+    id: "path-linear-algebra",
+    format: "markdown",
+  });
+  assert.equal(markdown.format, "markdown");
+  assert.equal(markdown.filename, "linear-algebra-from-canon.md");
+  assert.equal(markdown.mimeType, "text/markdown");
+  assert.match(markdown.content, /^# Linear algebra from canon/);
+  assert.match(markdown.content, /- \*\*Progress:\*\* 1 of 6 nodes consolidated · 2 in progress/);
+  assert.match(markdown.content, /#### Node n-concept/);
+  assert.match(markdown.content, /Micro-code \/ implementation/);
+
+  await assert.rejects(
+    h.call("paths.export", { pathId: "path-missing", format: "json" }),
+    /Unknown path: path-missing/,
+  );
+  await assert.rejects(
+    h.call("paths.export", { pathId: "path-linear-algebra", format: "pdf" }),
+    /format must be "json" or "markdown"/,
+  );
+  await assert.rejects(h.call("paths.export", { format: "json" }), /pathId must be a string/);
+});
+
+test("paths.export is fenced once activation aborts", async (t) => {
+  const h = host(t);
+  await createConversation(h);
+  await h.runTool("save_learning_path", rawPath());
+  h.controller.abort();
+  await assert.rejects(
+    h.call("paths.export", { pathId: "path-linear-algebra", format: "json" }),
+    /shutting down/,
+  );
+  await h.cleanup();
+});

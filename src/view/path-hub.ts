@@ -19,6 +19,8 @@ import type {
   PluginWidgetHandle,
 } from "learnharness-plugin-api";
 import type { ArtifactType, ChildSessionKind, LearningPath, PathNode, PivotSuggestion, ProgressionState } from "../domain.ts";
+import { triggerBrowserDownload } from "../export.ts";
+import type { ExportedLearningPath, ExportFormat } from "../export.ts";
 import { createSessionLauncher } from "../session-launcher.ts";
 import type { NativeSessionHost } from "../native-session-host.ts";
 import { consumePathHubTarget, subscribePathHubTarget } from "../session-navigation.ts";
@@ -109,6 +111,8 @@ function countNodes(path: LearningPath): { total: number; consolidated: number; 
 export interface PathHubOptions {
   /** Test seam: inject the native session host so no network/storage is touched. */
   readonly sessionHost?: NativeSessionHost;
+  /** Test seam: observe or replace the browser download for an export. */
+  readonly onExport?: (exported: ExportedLearningPath) => void;
 }
 
 export function mountPathHub(
@@ -138,7 +142,8 @@ export function mountPathHub(
 
   const createHost = element(document, "span", "lp-button-host");
   const refineHost = element(document, "span", "lp-button-host");
-  headerActions.append(createHost, refineHost);
+  const exportHost = element(document, "span", "lp-button-host");
+  headerActions.append(createHost, refineHost, exportHost);
   const summary = element(document, "p", "lp-progress-summary");
   summary.setAttribute("aria-live", "polite");
   headerActions.append(summary);
@@ -448,6 +453,7 @@ export function mountPathHub(
       label: refineOpen ? "Refine Path · on" : "Refine Path",
       variant: refineOpen ? "secondary" : "outline",
     });
+    exportButton.update({ disabled: path === null });
     // Keep the Architect visible while there is no path yet: that is how one is made.
     architectContainer.hidden = !refineOpen && summaries.length > 0;
   }
@@ -690,6 +696,24 @@ export function mountPathHub(
     }
   }
 
+  async function exportCurrentPath(format: ExportFormat): Promise<void> {
+    if (disposed || signal.aborted || path === null) return;
+    try {
+      const exported = await ctx.call<ExportedLearningPath>("paths.export", {
+        pathId: path.id,
+        format,
+      });
+      if (disposed || signal.aborted) return;
+      (options.onExport ?? ((item) => triggerBrowserDownload(document, item)))(exported);
+      showError(null);
+    } catch (problem) {
+      if (disposed || signal.aborted) return;
+      showError(
+        `Could not export the learning path: ${problem instanceof Error ? problem.message : String(problem)}`,
+      );
+    }
+  }
+
   const createButton = ctx.ui.mountButton(
     createHost,
     {
@@ -729,6 +753,41 @@ export function mountPathHub(
     { signal },
   );
   handles.push(refineButton);
+
+  const exportButton = ctx.ui.mountButton(
+    exportHost,
+    {
+      label: "Export Path",
+      variant: "outline",
+      size: "sm",
+      onClick: () => {
+        if (signal.aborted || disposed || path === null) return;
+        const handle = ctx.ui.openMenu(
+          exportHost,
+          {
+            label: "Export learning path",
+            preferredSide: "down",
+            items: [
+              {
+                key: "export-json",
+                label: "Export as JSON",
+                onSelect: () => void exportCurrentPath("json"),
+              },
+              {
+                key: "export-markdown",
+                label: "Export as Markdown",
+                onSelect: () => void exportCurrentPath("markdown"),
+              },
+            ],
+          },
+          { signal },
+        );
+        handles.push(handle);
+      },
+    },
+    { signal },
+  );
+  handles.push(exportButton);
 
   pathSelect.addEventListener("change", () => {
     if (signal.aborted || disposed) return;
