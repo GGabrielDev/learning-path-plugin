@@ -210,6 +210,48 @@ test("experimental graph context toggle defaults off, saves, and restores after 
     assert.equal(toggle().value, false);
     assert.match(fixture.root.textContent ?? "", /Could not save settings: disk unavailable/);
     fixture.context.call = originalCall;
+    } finally {
+    fixture.restore();
+  }
+});
+test("settings page exports a path as JSON and Markdown", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    mountSettingsPage(fixture.context, fixture.root, fixture.context.signal);
+    await fixture.flush();
+
+    const jsonButton = () =>
+      fixture.findLast("mountButton", (record) => record.props.label === "Export JSON");
+    assert.equal(jsonButton().props.variant, "outline");
+    assert.equal(jsonButton().props.size, "xs");
+    await jsonButton().props.onClick();
+    await fixture.flush();
+
+    assert.deepEqual(fixture.calls.filter((call) => call.name === "paths.export").at(-1)?.input, {
+      pathId: path.id,
+      format: "json",
+    });
+    assert.match(
+      fixture.root.textContent ?? "",
+      /Exported "Linear algebra from canon" as JSON \(linear-algebra-from-canon\.json\)\./,
+    );
+
+    const markdownButton = () =>
+      fixture.findLast("mountButton", (record) => record.props.label === "Export Markdown");
+    assert.equal(markdownButton().props.variant, "outline");
+    assert.equal(markdownButton().props.size, "xs");
+    await markdownButton().props.onClick();
+    await fixture.flush();
+
+    assert.deepEqual(fixture.calls.filter((call) => call.name === "paths.export").at(-1)?.input, {
+      pathId: path.id,
+      format: "markdown",
+    });
+    assert.match(
+      fixture.root.textContent ?? "",
+      /Exported "Linear algebra from canon" as Markdown \(linear-algebra-from-canon\.md\)\./,
+    );
   } finally {
     fixture.restore();
   }
@@ -233,5 +275,7 @@ test("graph toggle is disabled while its save is in flight", async () => {
     await fixture.flush();
     assert.equal(toggle().disabled, false);
     assert.equal(toggle().value, true);
-  } finally { fixture.restore(); }
+  } finally { 
+    fixture.restore(); 
+  }
 });

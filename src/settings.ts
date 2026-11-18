@@ -37,6 +37,8 @@ import type {
   ThinkingLevelName,
 } from "./domain.ts";
 import { EVENT_PATHS_CHANGED, EVENT_SETTINGS_CHANGED } from "./topics.ts";
+import { triggerBrowserDownload } from "./export.ts";
+import type { ExportedLearningPath, ExportFormat } from "./export.ts";
 import { NODE_TYPE_LABELS, artifactLabel } from "./view/labels.ts";
 
 interface PathSummary {
@@ -492,6 +494,25 @@ export function mountSettingsPage(
     dialogs.push(dialog);
   }
 
+  async function exportPath(summary: PathSummary, format: ExportFormat): Promise<void> {
+    if (disposed || signal.aborted) return;
+    try {
+      const exported = await ctx.call<ExportedLearningPath>("paths.export", {
+        pathId: summary.id,
+        format,
+      });
+      if (disposed || signal.aborted) return;
+      triggerBrowserDownload(document, exported);
+      setStatus(
+        `Exported "${summary.title}" as ${format === "json" ? "JSON" : "Markdown"} (${exported.filename}).`,
+        "info",
+      );
+    } catch (problem) {
+      if (disposed || signal.aborted) return;
+      setStatus(`Could not export "${summary.title}": ${errorMessage(problem)}`, "error");
+    }
+  }
+
   function renderPaths(): void {
     if (disposed || signal.aborted) return;
     clearPaths();
@@ -523,6 +544,34 @@ export function mountSettingsPage(
       item.append(text);
       const actions = element(document, "span", "lp-settings-path-actions");
       item.append(actions);
+      const jsonHost = element(document, "span", "lp-button-host");
+      actions.append(jsonHost);
+      pathHandles.push(
+        ctx.ui.mountButton(
+          jsonHost,
+          {
+            label: "Export JSON",
+            variant: "outline",
+            size: "xs",
+            onClick: () => void exportPath(summary, "json"),
+          },
+          { signal },
+        ),
+      );
+      const markdownHost = element(document, "span", "lp-button-host");
+      actions.append(markdownHost);
+      pathHandles.push(
+        ctx.ui.mountButton(
+          markdownHost,
+          {
+            label: "Export Markdown",
+            variant: "outline",
+            size: "xs",
+            onClick: () => void exportPath(summary, "markdown"),
+          },
+          { signal },
+        ),
+      );
       const host = element(document, "span", "lp-button-host");
       actions.append(host);
       pathHandles.push(

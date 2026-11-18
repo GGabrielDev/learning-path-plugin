@@ -1,7 +1,8 @@
 /** Learning Path — versioned, atomic persistence under `ctx.dataDirectory`.
  *
  * Owns exactly these files:
- *   learning-paths.json      versioned path records
+ *   paths/<pathId>.json      versioned path records, one file per path
+ *   learning-paths.json      legacy path records, migrated into paths/ on open
  *   settings.json            versioned plugin settings
  *   architect.json           chosen Architect model (needed to re-register)
  *   sources/<sourceId>.md    converted learner uploads (UUID names only)
@@ -33,7 +34,9 @@ import type {
 } from "./domain.ts";
 
 export const STORE_SCHEMA_VERSION = 1;
+export const PATHS_DIRECTORY = "paths";
 export const LEARNING_PATHS_FILE = "learning-paths.json";
+export const LEARNING_PATHS_BACKUP_FILE = "learning-paths.json.backup";
 export const SETTINGS_FILE = "settings.json";
 export const ARCHITECT_FILE = "architect.json";
 export const SOURCES_DIRECTORY = "sources";
@@ -89,6 +92,12 @@ interface PathsFile {
   readonly schemaVersion: number;
   readonly revision: number;
   readonly paths: readonly LearningPath[];
+}
+
+interface PathRecordFile {
+  readonly schemaVersion: number;
+  readonly revision: number;
+  readonly path: LearningPath;
 }
 
 interface SettingsFile {
@@ -159,6 +168,40 @@ function readRevision(record: Record<string, unknown>, filename: string): number
     throw new StoreError("corrupt", `Learning Path data at ${filename} is corrupt: invalid revision. No data was changed.`);
   }
   return revision as number;
+}
+
+const PATH_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/** Resolve one path's file strictly inside `pathsDirectory`, refusing traversal. */
+function pathFilename(pathsDirectory: string, id: string): string {
+  if (!PATH_ID_PATTERN.test(id) || id.includes("..")) {
+    throw new StoreError("unsafe", `Invalid Learning Path id: ${JSON.stringify(id)}. No data was changed.`);
+  }
+  const base = path.resolve(pathsDirectory);
+  const filename = path.resolve(base, `${id}.json`);
+  if (!filename.startsWith(`${base}${path.sep}`)) {
+    throw new StoreError("unsafe", `Refusing to resolve Learning Path file outside ${base}: ${filename}. No data was changed.`);
+  }
+  return filename;
+}
+
+function loadPathRecordFile(filename: string): { path: LearningPath; revision: number } {
+  const raw = readJsonFile(filename);
+  if (raw === undefined) {
+    throw new StoreError("corrupt", `Learning Path data at ${filename} is corrupt: file disappeared. No data was changed.`);
+  }
+  const record = asRecord(raw, filename);
+  readSchemaVersion(record, filename);
+  const revision = readRevision(record, filename);
+  const result = validateLearningPath(record.path);
+  if (!result.ok) {
+    const issue = result.issues[0];
+    throw new StoreError(
+      "corrupt",
+      `Learning Path data at ${filename} is corrupt: path ${issue?.path ?? ""} ${issue?.message ?? "is invalid"}. No data was changed.`,
+    );
+  }
+  return { path: result.value, revision };
 }
 
 function loadPathsFile(filename: string): { paths: LearningPath[]; revision: number } {
@@ -369,15 +412,101 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
   }
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
 
-  const pathsFilename = path.join(directory, LEARNING_PATHS_FILE);
+  const pathsDirectory = path.join(directory, PATHS_DIRECTORY);
+  const legacyPathsFilename = path.join(directory, LEARNING_PATHS_FILE);
+  const backupPathsFilename = path.join(directory, LEARNING_PATHS_BACKUP_FILE);
   const settingsFilename = path.join(directory, SETTINGS_FILE);
   const architectFilename = path.join(directory, ARCHITECT_FILE);
   const sourcesDirectory = path.join(directory, SOURCES_DIRECTORY);
 
-  let pathsState = loadPathsFile(pathsFilename);
+  const ensurePathsDirectory = (): void => {
+    const pathsStat = fs.lstatSync(pathsDirectory, { throwIfNoEntry: false });
+    if (pathsStat?.isSymbolicLink()) {
+      throw new StoreError(
+        "unsafe",
+        `Refusing to follow symlinked Learning Path directory: ${pathsDirectory}. No data was changed.`,
+      );
+    }
+    if (pathsStat && !pathsStat.isDirectory()) {
+      throw new StoreError(
+        "corrupt",
+        `Learning Path paths entry is not a directory: ${pathsDirectory}. No data was changed.`,
+      );
+    }
+    if (!pathsStat) fs.mkdirSync(pathsDirectory, { recursive: true, mode: 0o700 });
+  };
+
+  const loadedPaths = ((): { paths: LearningPath[]; revisions: Map<string, number> } => {
+    const pathsStat = fs.lstatSync(pathsDirectory, { throwIfNoEntry: false });
+    if (pathsStat?.isSymbolicLink()) {
+      throw new StoreError(
+        "unsafe",
+        `Refusing to follow symlinked Learning Path directory: ${pathsDirectory}. No data was changed.`,
+      );
+    }
+    if (pathsStat && !pathsStat.isDirectory()) {
+      throw new StoreError(
+        "corrupt",
+        `Learning Path paths entry is not a directory: ${pathsDirectory}. No data was changed.`,
+      );
+    }
+
+    const paths: LearningPath[] = [];
+    const revisions = new Map<string, number>();
+    if (pathsStat) {
+      const entries = fs
+        .readdirSync(pathsDirectory, { withFileTypes: true })
+        .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+      for (const entry of entries) {
+        if (entry.name.endsWith(".tmp") || !entry.name.endsWith(".json")) continue;
+        const filename = path.join(pathsDirectory, entry.name);
+        const loaded = loadPathRecordFile(filename);
+        pathFilename(pathsDirectory, loaded.path.id);
+        if (`${loaded.path.id}.json` !== entry.name) {
+          throw new StoreError(
+            "corrupt",
+            `Learning Path data at ${filename} is corrupt: path id "${loaded.path.id}" does not match filename. No data was changed.`,
+          );
+        }
+        paths.push(loaded.path);
+        revisions.set(loaded.path.id, loaded.revision);
+      }
+    }
+    return { paths, revisions };
+  })();
+
+  let pathsState = loadedPaths.paths;
+  const revisions = loadedPaths.revisions;
+
+  const legacyStat = fs.lstatSync(legacyPathsFilename, { throwIfNoEntry: false });
+  const legacyState = legacyStat ? loadPathsFile(legacyPathsFilename) : null;
+
   let settingsState = loadSettingsFile(settingsFilename);
   let architectState = loadArchitectFile(architectFilename);
   let sourceState = loadSourceIndex(sourcesDirectory);
+
+  if (legacyState) {
+    const known = new Set(pathsState.map((candidate) => candidate.id));
+    const legacyRevision = Math.max(1, legacyState.revision);
+    const pending = legacyState.paths
+      .filter((candidate) => !known.has(candidate.id))
+      .map((legacyPath) => ({ legacyPath, filename: pathFilename(pathsDirectory, legacyPath.id) }));
+    if (pending.length > 0) ensurePathsDirectory();
+    for (const { legacyPath, filename } of pending) {
+      atomicWrite(
+        filename,
+        serialize({
+          schemaVersion: STORE_SCHEMA_VERSION,
+          revision: legacyRevision,
+          path: legacyPath,
+        } satisfies PathRecordFile),
+      );
+      pathsState.push(legacyPath);
+      revisions.set(legacyPath.id, legacyRevision);
+      known.add(legacyPath.id);
+    }
+    fs.renameSync(legacyPathsFilename, backupPathsFilename);
+  }
 
   const sourceFilename = (sourceId: string): string =>
     path.join(sourcesDirectory, `${assertSourceId(sourceId)}.md`);
@@ -440,42 +569,56 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
     atomicWrite(path.join(sourcesDirectory, `${id}.md`), markdown);
   };
 
-  const writePaths = (paths: LearningPath[]): void => {
-    atomicWrite(
-      pathsFilename,
-      serialize({
-        schemaVersion: STORE_SCHEMA_VERSION,
-        revision: pathsState.revision + 1,
-        paths,
-      } satisfies PathsFile),
-    );
-    pathsState = { paths, revision: pathsState.revision + 1 };
-  };
-
   return {
     directory,
 
-    paths: () => pathsState.paths,
+    paths: () => pathsState,
 
     path(id) {
-      return pathsState.paths.find((candidate) => candidate.id === id) ?? null;
+      return pathsState.find((candidate) => candidate.id === id) ?? null;
     },
 
     savePath(value) {
       const parsed = parseLearningPath(value);
-      const index = pathsState.paths.findIndex((candidate) => candidate.id === parsed.id);
-      const next =
+      const filename = pathFilename(pathsDirectory, parsed.id);
+      ensurePathsDirectory();
+      const nextRevision = (revisions.get(parsed.id) ?? 0) + 1;
+      atomicWrite(
+        filename,
+        serialize({
+          schemaVersion: STORE_SCHEMA_VERSION,
+          revision: nextRevision,
+          path: parsed,
+        } satisfies PathRecordFile),
+      );
+      const index = pathsState.findIndex((candidate) => candidate.id === parsed.id);
+      pathsState =
         index === -1
-          ? [...pathsState.paths, parsed]
-          : pathsState.paths.map((candidate, position) => (position === index ? parsed : candidate));
-      writePaths(next);
+          ? [...pathsState, parsed]
+          : pathsState.map((candidate, position) => (position === index ? parsed : candidate));
+      revisions.set(parsed.id, nextRevision);
       return parsed;
     },
 
     deletePath(id) {
-      const next = pathsState.paths.filter((candidate) => candidate.id !== id);
-      if (next.length === pathsState.paths.length) return false;
-      writePaths(next);
+      const index = pathsState.findIndex((candidate) => candidate.id === id);
+      if (index === -1) return false;
+      const filename = pathFilename(pathsDirectory, id);
+      const fileStat = fs.lstatSync(filename, { throwIfNoEntry: false });
+      if (fileStat?.isSymbolicLink()) {
+        throw new StoreError(
+          "unsafe",
+          `Refusing to delete symlinked Learning Path file: ${filename}. No data was changed.`,
+        );
+      }
+      try {
+        fs.unlinkSync(filename);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      syncDirectory(pathsDirectory);
+      pathsState = pathsState.filter((candidate) => candidate.id !== id);
+      revisions.delete(id);
       return true;
     },
 

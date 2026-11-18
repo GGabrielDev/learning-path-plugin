@@ -103,7 +103,7 @@ credential files inside the package.
 The build writes only `dist/`. It refuses a symlinked `dist/` and a misplaced
 `dist/data/`, and never touches a sibling `data/` directory. At runtime the
 plugin writes through the host-provided `ctx.dataDirectory`:
-`learning-paths.json`, `settings.json`, `architect.json` and `sources/`. It leaves
+`paths/<pathId>.json`, `settings.json`, `architect.json` and `sources/`. It leaves
 host-reserved `agents/`, `tasks/` and `usage.jsonl` alone, refuses newer or
 corrupt records instead of wiping them, and never deletes native chats or
 Knowledge Graph records.
@@ -148,6 +148,13 @@ Knowledge Graph records.
    deletion. Saving a new Architect model while an
    Architect run is in progress never cancels it; the model applies once the run
    finishes.
+6. **Export a path.** Use **Export Path** in the Path Hub, or **Export JSON** /
+   **Export Markdown** beside a path in Settings → Learning Paths. JSON is a
+   validated, pretty-printed copy of the complete path record. Markdown is a
+   readable document with the goal, progress, source spine, modules, nodes,
+   anchors, effective artifacts, child sessions, error ledger and pivot
+   suggestions. Both download locally; exporting never changes the path or any
+   native chat.
 
 There is deliberately **no scheduling**: no hours, days, streaks or completion
 dates. Any node can be opened at any time.
@@ -239,6 +246,7 @@ diagnosis; only the learner can accept it. Dismissing it changes nothing.
 | `src/domain.ts` | Validated schema, node types, artifact catalog, settings |
 | `src/framework.ts` | Architect system prompt and child-session brief builder |
 | `src/store.ts` | Versioned atomic JSON store under `ctx.dataDirectory` |
+| `src/export.ts` | Deterministic JSON/Markdown path exports and browser download |
 | `src/architect-agent.ts` | Persistent Path Architect definition and server tools |
 | `src/backend.ts` | RPC handlers, events, native bridge and activation lifecycle |
 | `src/view/path-hub.ts` | Path Hub: header, tree, Architect pane, Node Inspector |

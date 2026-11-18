@@ -30,6 +30,7 @@ import type {
   PluginView,
 } from "learnharness-plugin-api";
 import type { ChildSessionKind, ChildSessionLink, LearningPath, PluginSettings } from "../src/domain.ts";
+import { exportLearningPath } from "../src/export.ts";
 import { buildChildSessionBrief } from "../src/framework.ts";
 import { resolvePivotSuggestion, updateErrorEntry } from "../src/session-links.ts";
 import type { PathSummary } from "../src/view/path-hub.ts";
@@ -413,6 +414,16 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
       case "paths.get": {
         const found = paths.get(value.id);
         return Promise.resolve({ path: found ? structuredClone(found) : null } as T);
+      }
+      case "paths.export": {
+        const pathId = String(value.pathId ?? value.id ?? "");
+        const format = value.format;
+        if (format !== "json" && format !== "markdown") {
+          return Promise.reject(new Error('format must be "json" or "markdown".'));
+        }
+        const found = paths.get(pathId);
+        if (!found) return Promise.reject(new Error(`Unknown path: ${pathId}`));
+        return Promise.resolve(exportLearningPath(found, format, settingsState) as T);
       }
       case "paths.updateNode": {
         const found = paths.get(value.pathId);
