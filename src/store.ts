@@ -36,6 +36,7 @@ import type {
 export const STORE_SCHEMA_VERSION = 1;
 export const PATHS_DIRECTORY = "paths";
 export const LEARNING_PATHS_FILE = "learning-paths.json";
+export const LEARNING_PATHS_BACKUP_FILE = "learning-paths.json.backup";
 export const SETTINGS_FILE = "settings.json";
 export const ARCHITECT_FILE = "architect.json";
 export const SOURCES_DIRECTORY = "sources";
@@ -413,6 +414,7 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
 
   const pathsDirectory = path.join(directory, PATHS_DIRECTORY);
   const legacyPathsFilename = path.join(directory, LEARNING_PATHS_FILE);
+  const backupPathsFilename = path.join(directory, LEARNING_PATHS_BACKUP_FILE);
   const settingsFilename = path.join(directory, SETTINGS_FILE);
   const architectFilename = path.join(directory, ARCHITECT_FILE);
   const sourcesDirectory = path.join(directory, SOURCES_DIRECTORY);
@@ -503,7 +505,7 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
       revisions.set(legacyPath.id, legacyRevision);
       known.add(legacyPath.id);
     }
-    fs.unlinkSync(legacyPathsFilename);
+    fs.renameSync(legacyPathsFilename, backupPathsFilename);
   }
 
   const sourceFilename = (sourceId: string): string =>
