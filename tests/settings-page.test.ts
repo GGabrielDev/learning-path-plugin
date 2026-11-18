@@ -187,3 +187,46 @@ test("path deletion asks for confirmation and never touches native chats", async
     fixture.restore();
   }
 });
+
+test("settings page exports a path as JSON and Markdown", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    mountSettingsPage(fixture.context, fixture.root, fixture.context.signal);
+    await fixture.flush();
+
+    const jsonButton = () =>
+      fixture.findLast("mountButton", (record) => record.props.label === "Export JSON");
+    assert.equal(jsonButton().props.variant, "outline");
+    assert.equal(jsonButton().props.size, "xs");
+    await jsonButton().props.onClick();
+    await fixture.flush();
+
+    assert.deepEqual(fixture.calls.filter((call) => call.name === "paths.export").at(-1)?.input, {
+      pathId: path.id,
+      format: "json",
+    });
+    assert.match(
+      fixture.root.textContent ?? "",
+      /Exported "Linear algebra from canon" as JSON \(linear-algebra-from-canon\.json\)\./,
+    );
+
+    const markdownButton = () =>
+      fixture.findLast("mountButton", (record) => record.props.label === "Export Markdown");
+    assert.equal(markdownButton().props.variant, "outline");
+    assert.equal(markdownButton().props.size, "xs");
+    await markdownButton().props.onClick();
+    await fixture.flush();
+
+    assert.deepEqual(fixture.calls.filter((call) => call.name === "paths.export").at(-1)?.input, {
+      pathId: path.id,
+      format: "markdown",
+    });
+    assert.match(
+      fixture.root.textContent ?? "",
+      /Exported "Linear algebra from canon" as Markdown \(linear-algebra-from-canon\.md\)\./,
+    );
+  } finally {
+    fixture.restore();
+  }
+});

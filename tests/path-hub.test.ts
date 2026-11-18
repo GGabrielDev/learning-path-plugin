@@ -578,3 +578,72 @@ test("an empty hub offers Create a Path and does not invent a tree or inspector 
     fixture.restore();
   }
 });
+
+test("Path Hub exports the selected path as JSON and Markdown from its menu", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    const exported: { format: string; filename: string; content: string }[] = [];
+    mountPathHub(fixture.context, fixture.root, fixture.context.signal, {
+      onExport(item) {
+        exported.push(item);
+      },
+    });
+    await fixture.flush();
+
+    const exportButton = () =>
+      fixture.findLast("mountButton", (record) => record.props.label === "Export Path");
+    assert.equal(exportButton().props.disabled, false);
+    await exportButton().props.onClick();
+    const jsonMenu = fixture.findLast("openMenu");
+    assert.equal(jsonMenu.props.label, "Export learning path");
+    assert.equal(jsonMenu.props.preferredSide, "down");
+    assert.deepEqual(
+      jsonMenu.props.items.map((item: { key: string }) => item.key),
+      ["export-json", "export-markdown"],
+    );
+    await jsonMenu.props.items.find((item: { key: string }) => item.key === "export-json").onSelect();
+    await fixture.flush();
+
+    assert.deepEqual(fixture.calls.filter((call) => call.name === "paths.export").at(-1)?.input, {
+      pathId: path.id,
+      format: "json",
+    });
+    assert.equal(exported.length, 1);
+    assert.equal(exported[0]!.format, "json");
+    assert.equal(exported[0]!.filename, "linear-algebra-from-canon.json");
+    assert.equal(JSON.parse(exported[0]!.content).id, path.id);
+
+    await exportButton().props.onClick();
+    const markdownMenu = fixture.findLast("openMenu");
+    await markdownMenu.props.items
+      .find((item: { key: string }) => item.key === "export-markdown")
+      .onSelect();
+    await fixture.flush();
+
+    assert.deepEqual(fixture.calls.filter((call) => call.name === "paths.export").at(-1)?.input, {
+      pathId: path.id,
+      format: "markdown",
+    });
+    assert.equal(exported.length, 2);
+    assert.equal(exported[1]!.format, "markdown");
+    assert.equal(exported[1]!.filename, "linear-algebra-from-canon.md");
+    assert.match(exported[1]!.content, /^# Linear algebra from canon/);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("Path Hub disables Export Path when there is no selected path", async () => {
+  const fixture = createViewFixture();
+  try {
+    mountPathHub(fixture.context, fixture.root, fixture.context.signal);
+    await fixture.flush();
+    const exportButton = fixture.find("mountButton", (record) => record.props.label === "Export Path");
+    assert.equal(exportButton.props.disabled, true);
+    await exportButton.props.onClick();
+    assert.equal(fixture.all("openMenu").length, 0);
+  } finally {
+    fixture.restore();
+  }
+});
