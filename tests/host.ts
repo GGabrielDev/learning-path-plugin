@@ -20,6 +20,7 @@ import type {
   PluginManifest,
   PluginToolContext,
   PluginTools,
+  GraphNode,
 } from "learnharness-plugin-api";
 import { activate } from "../src/backend.ts";
 
@@ -98,6 +99,8 @@ export interface HostOptions {
   readonly dataDirectory?: string;
   readonly catalog?: ModelCatalogResponse;
   readonly chats?: readonly ChatRecord[];
+  /** Public graph boundary: no model requests or host graph writes. */
+  readonly graph?: () => readonly GraphNode[];
 }
 
 export function createHost(options: HostOptions = {}): TestHost {
@@ -234,7 +237,7 @@ export function createHost(options: HostOptions = {}): TestHost {
       const found = chats.get(id);
       return found ? structuredClone(found) : null;
     },
-    graph: () => ({ nodes: [], chains: [] }) as never,
+    graph: () => ({ propositions: options.graph?.() ?? [], nodes: [], chains: [] }) as never,
     readGraphFile: () => [] as never,
   };
 

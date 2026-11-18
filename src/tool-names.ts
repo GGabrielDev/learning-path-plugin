@@ -10,5 +10,7 @@ export const LEARNING_PATH_TOOL_NAMES = [
   "learning_path_suggest_pivot",
 ] as const;
 
+export const GRAPH_SEARCH_TOOL_NAME = "learning_path_search_graph";
+
 /** Pivots proposed from a child session are limited to surgical repairs. */
 export const CHILD_PIVOT_TYPES = ["bridge", "contrast", "skill"] as const;

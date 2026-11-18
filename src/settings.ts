@@ -146,6 +146,15 @@ export function mountSettingsPage(
   }
   artifactsSection.append(catalogDetails);
 
+  const graphSection = section(
+    document,
+    root,
+    "Graph-informed tutoring (experimental)",
+    "Off by default. Read-only graph context is available only to linked teaching and practice agents; it never changes the path or claims mastery.",
+  );
+  const graphHost = element(document, "div", "lp-settings-rows");
+  graphSection.append(graphHost);
+
   const architectSection = section(
     document,
     root,
@@ -169,6 +178,8 @@ export function mountSettingsPage(
   let overrideDraft: ArchitectPreferences | null = null;
   let summaries: readonly PathSummary[] = [];
   let artifactRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
+  let graphRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
+  let graphSaving = false;
   let architectHandles: PluginWidgetHandle<unknown>[] = [];
   let pathHandles: PluginWidgetHandle<unknown>[] = [];
   const dialogs: PluginWidgetHandle<PluginDialogProps>[] = [];
@@ -235,6 +246,31 @@ export function mountSettingsPage(
     const rows = artifactRowsFor(settings);
     if (artifactRows) artifactRows.update({ rows });
     else artifactRows = ctx.ui.mountSettingsRows(artifactRowsHost, { rows }, { signal });
+  }
+
+  function renderGraphRows(): void {
+    if (disposed || signal.aborted) return;
+    const rows: PluginSettingsRow[] = [{
+      key: "graph-context-enabled",
+      type: "toggle",
+      label: "Use graph context for teaching and practice",
+      description: "Choose better questions from prior knowledge; reveal connections only after the learner's attempt. No graph content appears in the path UI.",
+      value: settings.graphContextEnabled === true,
+      disabled: graphSaving,
+      onChange: async (value: boolean) => {
+        if (graphSaving) return;
+        graphSaving = true;
+        renderGraphRows();
+        try {
+          await saveSettings({ ...settings, graphContextEnabled: value });
+        } finally {
+          graphSaving = false;
+          renderGraphRows();
+        }
+      },
+    }];
+    if (graphRows) graphRows.update({ rows });
+    else graphRows = ctx.ui.mountSettingsRows(graphHost, { rows }, { signal });
   }
 
   function preferences(): ArchitectPreferences {
@@ -569,6 +605,7 @@ export function mountSettingsPage(
       setStatus(`Could not save settings: ${errorMessage(problem)}`, "error");
       // Restore the controlled widgets to the last accepted record.
       renderArtifactRows();
+      renderGraphRows();
       renderArchitect();
       return false;
     }
@@ -582,6 +619,7 @@ export function mountSettingsPage(
         : "Settings saved.",
     );
     renderArtifactRows();
+    renderGraphRows();
     renderArchitect();
   }
 
@@ -598,6 +636,7 @@ export function mountSettingsPage(
       overrideDraft = null;
       summaries = [...(pathsResult.paths ?? [])];
       renderArtifactRows();
+      renderGraphRows();
       renderArchitect();
       renderPaths();
       setStatus(null);
@@ -632,6 +671,8 @@ export function mountSettingsPage(
     clearPaths();
     artifactRows?.dispose();
     artifactRows = null;
+    graphRows?.dispose();
+    graphRows = null;
     root.remove();
   };
 }

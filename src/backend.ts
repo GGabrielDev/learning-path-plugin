@@ -279,13 +279,12 @@ export function activate(ctx: PluginBackendContext): void {
 
   // Native child-session tools and conditional instructions. Registered for
   // prober/teacher/practice; the per-turn factory returns [] for unlinked chats.
-  disposers.push(
-    registerNativeBridge(ctx, {
-      store,
-      onPathChanged: (path, detail) =>
-        emit(EVENT_PATHS_CHANGED, { id: path.id, ...detail, updatedAt: path.updatedAt }),
-    }),
-  );
+  const nativeBridge = registerNativeBridge(ctx, {
+    store,
+    onPathChanged: (path, detail) =>
+      emit(EVENT_PATHS_CHANGED, { id: path.id, ...detail, updatedAt: path.updatedAt }),
+  });
+  disposers.push(nativeBridge.dispose);
 
   const cancelRuns = (): void => {
     const ids = new Set(watchers.keys());
@@ -520,6 +519,7 @@ export function activate(ctx: PluginBackendContext): void {
       assertModelAvailable(catalog, preference);
     }
     const saved = store.saveSettings(requested);
+    nativeBridge.refreshGraphInstructions();
     const override = preferenceModel(saved.architect);
     if (override) {
       const modelPending = applySettingsModel(override);
@@ -752,6 +752,8 @@ export function activate(ctx: PluginBackendContext): void {
     if (!path) throw new Error(`Unknown path: ${pathId}`);
     const node = findNodeById(path, nodeId);
     if (!node) throw new Error(`Unknown node: ${nodeId}`);
+    // This prompt is staged as a visible user message. Never read/pass graph
+    // propositions here: private graph context is delivered by get_brief only.
     const brief = buildChildSessionBrief({ path, nodeId, kind, settings: store.settings() });
     return {
       pathId: path.id,

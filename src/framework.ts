@@ -6,6 +6,8 @@
  * - `buildChildSessionBrief` seeds a linked teaching/practice session with the
  *   node's anchor, priming hook, interleaving callbacks, watchpoints and artifact.
  */
+import type { GraphNode } from "learnharness-plugin-api";
+import { graphContextForNode } from "./graph-context.ts";
 import {
   ARTIFACT_CATALOG,
   DomainValidationError,
@@ -258,6 +260,10 @@ export interface ChildSessionBriefInput {
   readonly nodeId: string;
   readonly kind: ChildSessionKind;
   readonly settings?: PluginSettings | null;
+  /** Agent-tool delivery only: never pass graph data into a learner-visible opening prompt. */
+  readonly graphPropositions?: readonly GraphNode[];
+  /** Exclude propositions recorded exclusively in this agent session. */
+  readonly currentChatId?: string;
   /** Optional override for the loose priming hook; a loose suggestion either way. */
   readonly primingHook?: string;
 }
@@ -355,6 +361,10 @@ export function buildChildSessionBrief(input: ChildSessionBriefInput): ChildSess
     'Respect "none" if the learner prefers conversation-only, and do not present the artifact as a gate.',
   ];
 
+  const graphLines = input.settings?.graphContextEnabled === true
+    ? graphContextForNode(node, input.graphPropositions ?? [], input.currentChatId)
+    : [];
+
   const text = [
     "# Learning Path child session brief",
     `You are opening a ${kind} session for one node of the learner's learning path "${path.title}".`,
@@ -388,6 +398,7 @@ export function buildChildSessionBrief(input: ChildSessionBriefInput): ChildSess
     "## Generative artifact",
     ...artifactLines,
     "",
+    ...(graphLines.length === 0 ? [] : [...graphLines, ""]),
     "## Reporting back",
     "Use learning_path_update_progress as understanding consolidates, learning_path_log_error for each diagnosed root cause, and learning_path_suggest_pivot only when a topic is not sticking for a specific reason.",
     "Never restructure the path yourself; the learner decides.",

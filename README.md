@@ -143,8 +143,9 @@ Knowledge Graph records.
    is not sticking, the agent may suggest a bounded detour; you accept, discuss
    or dismiss it. The path is never restructured silently.
 5. **Tune defaults.** Settings → Learning Paths configures artifact defaults per
-   node type (with the framework's justification), the Architect model/thinking
-   preference, and safe path deletion. Saving a new Architect model while an
+   node type (with the framework's justification), experimental graph-informed
+   tutoring (default off), the Architect model/thinking preference, and safe path
+   deletion. Saving a new Architect model while an
    Architect run is in progress never cancels it; the model applies once the run
    finishes.
 6. **Export a path.** Use **Export Path** in the Path Hub, or **Export JSON** /
@@ -157,6 +158,48 @@ Knowledge Graph records.
 
 There is deliberately **no scheduling**: no hours, days, streaks or completion
 dates. Any node can be opened at any time.
+
+## Experimental graph-informed tutoring
+
+Enable **Settings → Learning Paths → Use graph context for teaching and practice**
+only if you want linked teaching/practice agents to use recorded prior knowledge
+when choosing questions. It is off by default on `experimental`; turning it off
+removes graph search and graph-context instructions on subsequent turns. Normal
+unlinked sessions, the prober, and the Path Architect are unchanged.
+
+The agent asks before revealing connections. It checks recall rather than treating
+graph presence as mastery, prefers unlabelled transfer problems, and provides
+feedback only after the learner attempts. For relational maps, the learner draws
+first and the agent reviews afterward; `skill` and `bridge` units use the graph
+only for recall and watchpoints. This adds no links, review UI, graph writes,
+progression rules, or automatic path changes.
+
+**Intentional delivery boundary:** the opening brief from `sessions.prepare` is
+staged as a learner-visible user message. It therefore never contains retrieved
+graph propositions, even when enabled. Agent-only context is added when a linked
+teacher/practice agent calls `learning_path_get_brief`. A separate bounded,
+read-only `learning_path_search_graph` tool handles relevant detours. Compact tool
+cards do not display the retrieved text in the normal transcript. This is a
+prompt/delivery safeguard, not a security boundary against a learner inspecting
+raw tool messages, or a guarantee that an LLM will never disclose a connection.
+
+Retrieval uses the public `ctx.learning.graph().propositions` projection, not
+transcripts or graph-file reads. It matches the unit title, goal and source anchor
+against statements and recorded aliases, across all recorded sessions/paths.
+Propositions recorded exclusively in the active chat are excluded before ranking;
+mixed, other-source and unknown provenance remain eligible. Title, goal and
+source anchor each have a separate bounded query budget so long goals cannot hide
+the anchor. Each search scans at most 10,000 propositions and returns at most five, with statements
+capped at 600 characters and ids at 128. Query text is bounded; matching text and
+alias counts are capped. The initial SDK graph snapshot is still complete because
+the API has no pagination. Matches are lexical hints, not semantic equivalence;
+unrecorded paraphrases can be missed and homonyms can be false matches.
+
+Missing, empty or unavailable graphs leave the normal brief and tool list
+unchanged. A retained search tool also fails softly if access disappears or the
+setting is disabled. Turning the setting off cannot retract context already
+received earlier in an ongoing conversation; start a fresh session to exclude
+that history entirely.
 
 ## Node taxonomy
 
@@ -208,7 +251,8 @@ diagnosis; only the learner can accept it. Dismissing it changes nothing.
 | `src/backend.ts` | RPC handlers, events, native bridge and activation lifecycle |
 | `src/view/path-hub.ts` | Path Hub: header, tree, Architect pane, Node Inspector |
 | `src/view/*` | Architect chat, inspector, error ledger, pivots, dialogs, tool cards |
-| `src/settings.ts` | Artifact defaults, Architect model, safe path deletion |
+| `src/settings.ts` | Artifact defaults, graph-tutoring opt-in, Architect model, safe path deletion |
+| `src/graph-context.ts` | Bounded read-only proposition matching and shared graph-tutoring rules |
 | `scripts/build.mjs` | Guarded esbuild bundle into `dist/` |
 | `scripts/install-plugin-local.mjs` | Portable local installer |
 | `scripts/check-sdk.mjs` | Typecheck preflight for the external SDK types |
