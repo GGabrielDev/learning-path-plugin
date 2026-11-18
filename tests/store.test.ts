@@ -7,6 +7,7 @@ import path from "node:path";
 import { DomainValidationError } from "../src/domain.ts";
 import {
   ARCHITECT_FILE,
+  LEARNING_PATHS_BACKUP_FILE,
   LEARNING_PATHS_FILE,
   PATHS_DIRECTORY,
   SETTINGS_FILE,
@@ -263,15 +264,18 @@ test("refuses symlinked managed files and directories instead of following them 
 test("migrates a valid legacy learning-paths.json into per-path files on open", (t) => {
   const dir = directory(t);
   const second = { ...clone(makePath()), id: "path-2", title: "Second path" };
+  const originalContent = JSON.stringify({ schemaVersion: STORE_SCHEMA_VERSION, revision: 4, paths: [makePath(), second] });
   write(
     dir,
     LEARNING_PATHS_FILE,
-    JSON.stringify({ schemaVersion: STORE_SCHEMA_VERSION, revision: 4, paths: [makePath(), second] }),
+    originalContent,
   );
 
   const store = openLearningPathStore(dir);
   assert.equal(store.paths().length, 2);
   assert.equal(fs.existsSync(path.join(dir, LEARNING_PATHS_FILE)), false);
+  assert.equal(fs.existsSync(path.join(dir, LEARNING_PATHS_BACKUP_FILE)), true);
+  assert.equal(read(dir, LEARNING_PATHS_BACKUP_FILE), originalContent);
   for (const path of [makePath(), second]) {
     const envelope = readPathEnvelope(dir, path.id);
     assert.equal(envelope.schemaVersion, STORE_SCHEMA_VERSION);
@@ -293,6 +297,7 @@ test("migrates a valid legacy learning-paths.json into per-path files on open", 
   assert.equal(merged.path("path-linear-algebra")?.title, makePath().title);
   assert.equal(readPathEnvelope(existingDir, "path-linear-algebra").revision, 2);
   assert.equal(fs.existsSync(path.join(existingDir, LEARNING_PATHS_FILE)), false);
+  assert.equal(fs.existsSync(path.join(existingDir, LEARNING_PATHS_BACKUP_FILE)), true);
 });
 
 test("refuses corrupt or newer legacy path data without changing a byte", (t) => {
@@ -310,6 +315,7 @@ test("refuses corrupt or newer legacy path data without changing a byte", (t) =>
     assert.throws(() => openLearningPathStore(dir), StoreError);
     assert.equal(read(dir, LEARNING_PATHS_FILE), content);
     assert.equal(read(dir, pathFile("path-linear-algebra")), existing);
+    assert.equal(fs.existsSync(path.join(dir, LEARNING_PATHS_BACKUP_FILE)), false);
   }
 });
 
