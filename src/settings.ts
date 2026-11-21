@@ -267,9 +267,9 @@ export function mountSettingsPage(
       label: "Use graph context for teaching and practice",
       description: "Choose better questions from prior knowledge; reveal connections only after the learner's attempt. No graph content appears in the path UI.",
       value: settings.graphContextEnabled === true,
-      disabled: graphSaving,
+      disabled: graphSaving || mapSaving,
       onChange: async (value: boolean) => {
-        if (graphSaving) return;
+        if (graphSaving || mapSaving) return;
         graphSaving = true;
         renderGraphRows();
         try {
@@ -292,9 +292,9 @@ export function mountSettingsPage(
       label: "Offer learner-first earlier-map revisits",
       description: "Only linked Teacher sessions with relational-map artifacts; decline or missing maps continue normally.",
       value: settings.mapRevisitEnabled === true,
-      disabled: mapSaving,
+      disabled: graphSaving || mapSaving,
       onChange: async (value: boolean) => {
-        if (mapSaving) return;
+        if (graphSaving || mapSaving) return;
         mapSaving = true;
         renderMapRows();
         try {

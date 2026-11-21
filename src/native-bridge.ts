@@ -60,13 +60,6 @@ export const NATIVE_BRIDGE_INSTRUCTIONS = [
   "Never invent a node id, never write progress for a different node in this session, and never restructure the path yourself.",
 ].join("\n");
 
-export const MAP_REVISIT_INSTRUCTIONS = [
-  "# Learner-first relational-map revisit",
-  "Apply this section only when learning_path_get_brief includes the optional earlier relational-map revisit section.",
-  "Let the learner make the current map or explanation first. Only afterward may you invite an earlier map the learner chooses to supply.",
-  "If an earlier map is supplied, have the learner explain what they would keep, change or connect before reviewing it. If they decline or do not have one, continue normally.",
-  "Never scrape transcripts, treat artifactNote as a full map, supply the connection before the learner's attempt, or turn this activity into a consolidation gate.",
-].join("\n");
 export interface NativeBridgeOptions {
   readonly store: LearningPathStore;
   /** Backend hook for live path notifications after a tool write. */
@@ -581,14 +574,12 @@ export function registerNativeBridge(
   };
   const unregisterTools = ctx.registerTools(contribution);
   let active = true;
-  let unregisterDynamicInstructions: (() => void)[] = [];
-  const refreshGraphInstructions = (): void => {
-    if (!active) return;
-    for (const unregister of unregisterDynamicInstructions) unregister();
-    unregisterDynamicInstructions = [];
-    const settings = options.store.settings();
-    if (settings.graphContextEnabled === true) {
-      unregisterDynamicInstructions.push(ctx.registerInstructions({
+    let unregisterGraphInstructions: (() => void) | null = null;
+    const refreshGraphInstructions = (): void => {
+      if (!active) return;
+      unregisterGraphInstructions?.();
+      unregisterGraphInstructions = options.store.settings().graphContextEnabled === true
+        ? ctx.registerInstructions({
         agents: ["teacher", "practice"],
         text: [
           "# Graph-informed Learning Path tutoring",
@@ -596,22 +587,14 @@ export function registerNativeBridge(
           "Call learning_path_get_brief before teaching or practice to read private graph context, if any. Use learning_path_search_graph for relevant questions the brief did not anticipate.",
           GRAPH_AGENT_RULES,
         ].join("\n"),
-      }));
-    }
-    if (settings.mapRevisitEnabled === true) {
-      unregisterDynamicInstructions.push(ctx.registerInstructions({
-        agents: ["teacher"],
-        text: MAP_REVISIT_INSTRUCTIONS,
-      }));
-    }
-  };
-  refreshGraphInstructions();
-  return { refreshGraphInstructions, dispose: () => {
-    if (!active) return;
-    active = false;
-    for (const unregister of unregisterDynamicInstructions) unregister();
-    unregisterDynamicInstructions = [];
-    unregisterInstructions();
-    unregisterTools();
-  } };
+      }) : null;
+    };
+    refreshGraphInstructions();
+    return { refreshGraphInstructions, dispose: () => {
+      if (!active) return;
+      active = false;
+      unregisterGraphInstructions?.();
+      unregisterInstructions();
+      unregisterTools();
+    } };
 }

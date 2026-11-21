@@ -134,9 +134,6 @@ test("map revisit guidance reaches only enabled relational-map teaching briefs a
     assert.match(brief.text, /keep, change or connect/i);
     assert.match(brief.text, /If the learner does not have an earlier map|continue normally/i);
     assert.doesNotMatch((await runTool(teacher, "learning_path_get_brief", {})).text, /artifactNote is the full map/i);
-    assert.ok(host.instructions.some((entry) =>
-      entry.agents.length === 1 && entry.agents[0] === "teacher" && /learner-first.*map revisit/i.test(entry.text),
-    ));
 
     await host.call("sessions.link", {
       pathId: path.id,
