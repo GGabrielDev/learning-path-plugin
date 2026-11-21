@@ -157,6 +157,18 @@ test("map revisit guidance reaches only enabled relational-map teaching briefs a
     const nonRelational = await runTool(host.nativeTools("chat-concept", "teacher"), "learning_path_get_brief", {});
     assert.doesNotMatch(nonRelational.text, /Optional earlier relational-map revisit/);
 
+    for (const nodeType of ["skill", "bridge"]) {
+      const nodeId = `n-${nodeType}`;
+      await host.call("paths.updateNode", { pathId: path.id, nodeId, artifactType: "relational_map" });
+      await host.call("sessions.unlink", { pathId: path.id, nodeId: "n-contrast", chatId: "chat-map" });
+      await host.call("sessions.link", { pathId: path.id, nodeId, chatId: "chat-map", kind: "teaching" });
+      const overridden = await runTool(teacher, "learning_path_get_brief", {});
+      assert.match(overridden.text, /Recommended: .*\(relational_map\)/);
+      assert.doesNotMatch(overridden.text, /Optional earlier relational-map revisit/, nodeType);
+      await host.call("sessions.unlink", { pathId: path.id, nodeId, chatId: "chat-map" });
+      await host.call("sessions.link", { pathId: path.id, nodeId: "n-contrast", chatId: "chat-map", kind: "teaching" });
+    }
+
     await host.call("settings.save", { artifactDefaults: {}, mapRevisitEnabled: false });
     assert.equal(host.instructions.some((entry) => /learner-first.*map revisit/i.test(entry.text)), false);
     assert.doesNotMatch((await runTool(teacher, "learning_path_get_brief", {})).text, /Optional earlier relational-map revisit/);

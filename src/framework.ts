@@ -264,10 +264,13 @@ export const MAP_REVISIT_BRIEF = [
 
 export function mapRevisitBriefFor(
   kind: ChildSessionKind,
+  nodeType: PathNode["type"],
   artifact: ArtifactConfig,
   enabled: boolean,
 ): string[] {
-  return enabled && kind === "teaching" && artifact.type === "relational_map" ? [MAP_REVISIT_BRIEF] : [];
+  return enabled && kind === "teaching" && nodeType !== "skill" && nodeType !== "bridge" && artifact.type === "relational_map"
+    ? [MAP_REVISIT_BRIEF]
+    : [];
 }
 export interface ChildSessionBriefInput {
   readonly path: LearningPath;

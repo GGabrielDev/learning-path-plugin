@@ -207,6 +207,7 @@ function briefTool(
       });
       const mapRevisitLines = mapRevisitBriefFor(
         kind,
+        node.type,
         brief.artifact,
         agent === "teacher" && settings.mapRevisitEnabled === true,
       );
