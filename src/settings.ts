@@ -155,6 +155,15 @@ export function mountSettingsPage(
   const graphHost = element(document, "div", "lp-settings-rows");
   graphSection.append(graphHost);
 
+  const mapSection = section(
+    document,
+    root,
+    "Learner-first map revisiting (experimental)",
+    "Off by default. For relational-map teaching sessions, the learner makes the current map first and may optionally supply an earlier map for review afterward.",
+  );
+  const mapHost = element(document, "div", "lp-settings-rows");
+  mapSection.append(mapHost);
+
   const architectSection = section(
     document,
     root,
@@ -180,6 +189,8 @@ export function mountSettingsPage(
   let artifactRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
   let graphRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
   let graphSaving = false;
+  let mapRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
+  let mapSaving = false;
   let architectHandles: PluginWidgetHandle<unknown>[] = [];
   let pathHandles: PluginWidgetHandle<unknown>[] = [];
   const dialogs: PluginWidgetHandle<PluginDialogProps>[] = [];
@@ -271,6 +282,31 @@ export function mountSettingsPage(
     }];
     if (graphRows) graphRows.update({ rows });
     else graphRows = ctx.ui.mountSettingsRows(graphHost, { rows }, { signal });
+  }
+
+  function renderMapRows(): void {
+    if (disposed || signal.aborted) return;
+    const rows: PluginSettingsRow[] = [{
+      key: "map-revisit-enabled",
+      type: "toggle",
+      label: "Offer learner-first earlier-map revisits",
+      description: "Only linked Teacher sessions with relational-map artifacts; decline or missing maps continue normally.",
+      value: settings.mapRevisitEnabled === true,
+      disabled: mapSaving,
+      onChange: async (value: boolean) => {
+        if (mapSaving) return;
+        mapSaving = true;
+        renderMapRows();
+        try {
+          await saveSettings({ ...settings, mapRevisitEnabled: value });
+        } finally {
+          mapSaving = false;
+          renderMapRows();
+        }
+      },
+    }];
+    if (mapRows) mapRows.update({ rows });
+    else mapRows = ctx.ui.mountSettingsRows(mapHost, { rows }, { signal });
   }
 
   function preferences(): ArchitectPreferences {
@@ -603,14 +639,13 @@ export function mountSettingsPage(
     } catch (problem) {
       if (disposed || signal.aborted) return false;
       setStatus(`Could not save settings: ${errorMessage(problem)}`, "error");
-      // Restore the controlled widgets to the last accepted record.
       renderArtifactRows();
       renderGraphRows();
+      renderMapRows();
       renderArchitect();
       return false;
     }
   }
-
   function showSaved(saved: PluginSettings, modelPending = false): void {
     settings = saved;
     setStatus(
@@ -620,6 +655,7 @@ export function mountSettingsPage(
     );
     renderArtifactRows();
     renderGraphRows();
+    renderMapRows();
     renderArchitect();
   }
 
@@ -637,6 +673,7 @@ export function mountSettingsPage(
       summaries = [...(pathsResult.paths ?? [])];
       renderArtifactRows();
       renderGraphRows();
+      renderMapRows();
       renderArchitect();
       renderPaths();
       setStatus(null);
@@ -673,6 +710,8 @@ export function mountSettingsPage(
     artifactRows = null;
     graphRows?.dispose();
     graphRows = null;
+    mapRows?.dispose();
+    mapRows = null;
     root.remove();
   };
 }
