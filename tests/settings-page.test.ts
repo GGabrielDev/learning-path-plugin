@@ -286,17 +286,20 @@ test("graph toggle is disabled while its save is in flight", async () => {
     mountSettingsPage(fixture.context, fixture.root, fixture.context.signal);
     await fixture.flush();
     const toggle = () => artifactRow(liveRows(fixture, "graph-context-enabled"), "graph-context-enabled");
+    const mapToggle = () => artifactRow(liveRows(fixture, "map-revisit-enabled"), "map-revisit-enabled");
     const originalCall = fixture.context.call;
     let finish!: () => void;
     const gate = new Promise<void>(resolve => { finish = resolve; });
     fixture.context.call = async (...args) => { await gate; return originalCall(...args); };
     const pending = toggle().onChange(true);
     assert.equal(toggle().disabled, true);
+    assert.equal(mapToggle().disabled, true);
     assert.match(fixture.root.textContent ?? "", /Saving/);
     finish();
     await pending;
     await fixture.flush();
     assert.equal(toggle().disabled, false);
+    assert.equal(mapToggle().disabled, false);
     assert.equal(toggle().value, true);
   } finally { 
     fixture.restore(); 

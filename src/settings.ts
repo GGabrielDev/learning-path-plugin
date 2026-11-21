@@ -272,11 +272,13 @@ export function mountSettingsPage(
         if (graphSaving || mapSaving) return;
         graphSaving = true;
         renderGraphRows();
+        renderMapRows();
         try {
           await saveSettings({ ...settings, graphContextEnabled: value });
         } finally {
           graphSaving = false;
           renderGraphRows();
+          renderMapRows();
         }
       },
     }];
@@ -297,11 +299,13 @@ export function mountSettingsPage(
         if (graphSaving || mapSaving) return;
         mapSaving = true;
         renderMapRows();
+        renderGraphRows();
         try {
           await saveSettings({ ...settings, mapRevisitEnabled: value });
         } finally {
           mapSaving = false;
           renderMapRows();
+          renderGraphRows();
         }
       },
     }];
