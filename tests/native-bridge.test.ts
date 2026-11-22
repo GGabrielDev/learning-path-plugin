@@ -133,7 +133,7 @@ test("map revisit guidance reaches only enabled relational-map teaching briefs a
     assert.match(brief.text, /Optional earlier relational-map revisit/);
     assert.match(brief.text, /keep, change or connect/i);
     assert.match(brief.text, /If the learner does not have an earlier map|continue normally/i);
-    assert.doesNotMatch((await runTool(teacher, "learning_path_get_brief", {})).text, /artifactNote is the full map/i);
+    assert.match(brief.text, /Never scrape transcripts, treat artifactNote as the full map/i);
 
     await host.call("sessions.link", {
       pathId: path.id,
@@ -171,6 +171,7 @@ test("map revisit guidance reaches only enabled relational-map teaching briefs a
     assert.doesNotMatch((await runTool(teacher, "learning_path_get_brief", {})).text, /Optional earlier relational-map revisit/);
   } finally { close(host, directory); }
 });
+
 test("deleted native chats stop injection even while the plugin link remains", async () => {
   const { host, directory } = hostWithPath([chat("chat-1")]);
   try {

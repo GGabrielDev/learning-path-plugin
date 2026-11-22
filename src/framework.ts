@@ -272,6 +272,7 @@ export function mapRevisitBriefFor(
     ? [MAP_REVISIT_BRIEF]
     : [];
 }
+
 export interface ChildSessionBriefInput {
   readonly path: LearningPath;
   readonly nodeId: string;

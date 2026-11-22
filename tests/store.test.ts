@@ -454,6 +454,7 @@ test("map revisit setting is opt-in, persists, and rejects non-boolean values", 
   store.saveSettings({ artifactDefaults: {}, mapRevisitEnabled: false });
   assert.equal(openLearningPathStore(dir).settings().mapRevisitEnabled, false);
 });
+
 test("graph context is opt-in, persists, and rejects non-boolean settings", (t) => {
   const dir = directory(t);
   const store = openLearningPathStore(dir);

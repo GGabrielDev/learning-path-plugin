@@ -214,6 +214,7 @@ test("experimental graph context toggle defaults off, saves, and restores after 
     fixture.restore();
   }
 });
+
 test("experimental map revisit toggle defaults off, saves, and restores after failure", async () => {
   const fixture = createViewFixture();
   try {
@@ -237,6 +238,7 @@ test("experimental map revisit toggle defaults off, saves, and restores after fa
     fixture.restore();
   }
 });
+
 test("settings page exports a path as JSON and Markdown", async () => {
   const path = makePath();
   const fixture = createViewFixture({ paths: [path] });
@@ -301,7 +303,7 @@ test("graph toggle is disabled while its save is in flight", async () => {
     assert.equal(toggle().disabled, false);
     assert.equal(mapToggle().disabled, false);
     assert.equal(toggle().value, true);
-  } finally { 
-    fixture.restore(); 
+  } finally {
+    fixture.restore();
   }
 });

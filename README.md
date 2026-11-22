@@ -156,6 +156,9 @@ Knowledge Graph records.
    suggestions. Both download locally; exporting never changes the path or any
    native chat.
 
+There is deliberately **no scheduling**: no hours, days, streaks or completion
+dates. Any node can be opened at any time.
+
 ## Experimental learner-first map revisiting
 
 Enable **Settings → Learning Paths → Offer learner-first earlier-map revisits**
@@ -170,12 +173,11 @@ The guidance is delivered only through the private `learning_path_get_brief`
 agent response. It never enters the learner-visible `sessions.prepare` prompt.
 The plugin does not scrape transcripts, treat `artifactNote` as a full map, add
 map storage, write the native graph or create a consolidation gate.
-There is deliberately **no scheduling**: no hours, days, streaks or completion
-dates. Any node can be opened at any time.
 
 ## Experimental graph-informed tutoring
 
 Enable **Settings → Learning Paths → Use graph context for teaching and practice**
+only if you want linked teaching/practice agents to use recorded prior knowledge
 when choosing questions. It is off by default on `experimental`; turning it off
 removes graph search and graph-context instructions on subsequent turns. Normal
 unlinked sessions, the prober, and the Path Architect are unchanged.
