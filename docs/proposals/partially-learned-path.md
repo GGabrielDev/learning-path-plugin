@@ -2,27 +2,32 @@
 
 Status: proposal only. Refs [#12](https://github.com/kerr-mwv/learning-path-plugin/issues/12). This document does not add runtime behavior and does not block the merged graph-tutoring work or PR #11.
 
-## Problem
+## What happens today
 
-The Architect can already use an uploaded PDF or UTF-8 text source, but a learner may also have relevant prior work in existing LearnHarness chats. Today the Architect cannot deliberately say, “these conversations are evidence that parts of this new path may be familiar.” As a result, a new path starts indistinguishably from a path for a complete beginner.
+The Architect can already use an uploaded PDF or UTF-8 text source. When a learner starts a new Teaching session for a node, LearnHarness already probes what they know before teaching. When host graph tools are enabled, the Prober can use prior graph records as hints, but the learner's answers are the evidence of what they know now. No chat selection is required.
 
-The intended meaning is **partially learned**, not mastered:
+## Optional manual context selection
 
-- some material may be familiar;
-- the learner's current knowledge is uncertain or stale;
-- the path should probe before deciding whether to reinforce or teach from scratch;
-- selecting a chat must never skip the probe or mark a node consolidated.
+The proposed “manual override” is a preference about **which earlier chats the Architect should consider**, not an override of probing or progression. A learner might pick a particular earlier session because it represents the background they want the Architect to take into account. A chat may be stale or only partly relevant; selecting it does not prove the learner still knows the material.
+
+Suggested learner-facing copy, useful even if chat selection is deferred:
+
+> When you start a new Teaching session, LearnHarness asks questions to check what you already know before teaching. You don't need to select prior chats for this to happen.
+
+If the picker is implemented, add:
+
+> Optional: choose earlier chats as background for the Architect. This won’t skip the knowledge check or mark anything as learned.
 
 ## Proposed first slice
 
-Let the Path Architect inspect a bounded list of native chats and choose some as prior-learning evidence when creating a new path.
+Let the learner choose which chats the Path Architect should use as optional background when creating a new path. No chats are selected automatically.
 
 ```text
 Architect
   list selectable chat metadata
     title, kind, dates, message count
     existing Learning Path/node associations, when present
-  learner/Architect selects chat ids
+  learner selects chat ids (optional)
   save_learning_path(..., priorLearningChatIds)
     validate ids still exist
     persist prior-learning evidence on the new path
@@ -50,7 +55,7 @@ PDF/Markdown/UTF-8 import already exists in the plugin through the Architect upl
 - Revalidate selected ids at save time. If a chat was deleted, reject the save without changing the path.
 - Read-only native chat listing; no chat mutation or deletion.
 - No writes to the native Knowledge Graph, no mastery claims and no semantic equivalence/deduplication classifier.
-- No automatic node↔chat matching in v1. The Architect chooses the evidence explicitly.
+- No automatic node↔chat matching in v1. The learner chooses which chats to include.
 - No new probing scheduler or automatic progression policy in this slice.
 - Existing paths and saves without prior-chat evidence retain their current behavior and representation as far as the schema allows.
 - Keep this separate from learner-first relational-map revisiting (#10/#11).
@@ -69,4 +74,4 @@ PDF/Markdown/UTF-8 import already exists in the plugin through the Architect upl
 
 ## Decision requested
 
-Is this the right first boundary for partially learned paths, or should chat selection remain deferred? A no means this proposal can be closed without runtime changes. If accepted, the implementation should start with metadata listing and explicit selected-id persistence—not transcript retrieval or the probe policy itself.
+Does explicit control over the Architect’s background context add enough value over normal probing? If not, close the issue and draft without runtime changes. Either way, make it clear to learners that fresh Teaching sessions already check what they know. If accepted, start with metadata and learner-selected ID persistence; this slice does not change what the Prober asks.
