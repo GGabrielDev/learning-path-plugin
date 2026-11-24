@@ -2,9 +2,12 @@
  *
  * One plugin view with four cooperating surfaces:
  * - a header bar with path switcher, Create a Path, Refine Path and progress;
- * - the accessible module → node → child-chat tree (`ctx.ui.mountTree`);
+ * - the path pane: a recorded-structure graph (module clusters, node cards and
+ *   only `interleavesNodeIds` edges) with the module-lane roadmap as the
+ *   alternate lens;
  * - the Architect chat pane (`mountStandardComposer` + `mountMarkdown`);
- * - the Node Inspector (pre-reading, artifact justification, progression).
+ * - the Node Inspector (pre-reading, artifact justification, progression and
+ *   child-chat actions).
  *
  * Lifecycle: every widget, listener, timer-free async load and DOM node belongs
  * to the per-mount signal. Stale loads are fenced by a request token, and
@@ -13,9 +16,6 @@
  */
 import type {
   PluginFrontendContext,
-  PluginTreeProps,
-  PluginTreeRow,
-  PluginUiContent,
   PluginWidgetHandle,
 } from "learnharness-plugin-api";
 import type { ArtifactType, ChildSessionKind, LearningPath, PathNode, PivotSuggestion, ProgressionState } from "../domain.ts";
@@ -79,9 +79,34 @@ interface PathResult {
   readonly path: LearningPath | null;
 }
 
-interface ContentEntry {
-  readonly signature: string;
-  readonly content: PluginUiContent;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Fallback card geometry for hosts without layout (tests) or before first
+ * paint. Real browsers are measured; this keeps the edge layer deterministic. */
+const FALLBACK_COLUMN_WIDTH = 320;
+const FALLBACK_CARD_WIDTH = 280;
+const FALLBACK_CARD_HEIGHT = 96;
+const FALLBACK_CARD_GAP = 16;
+const FALLBACK_HEADER_HEIGHT = 84;
+const FALLBACK_PADDING = 12;
+
+interface GraphEdge {
+  readonly from: string;
+  readonly to: string;
+}
+
+interface NodePlacement {
+  readonly moduleIndex: number;
+  readonly nodeIndex: number;
+}
+
+interface CardBox {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly moduleIndex: number;
+  readonly nodeIndex: number;
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(
@@ -172,11 +197,13 @@ export function mountPathHub(
   const overviewContainer = element(document, "section", "lp-overview-pane");
   overviewContainer.setAttribute("aria-label", "Paths overview");
   root.append(overviewContainer);
-  const treePane = element(document, "section", "lp-tree-pane");
-  treePane.setAttribute("aria-label", "Path hierarchy");
-  const paneTitle = element(document, "h2", "lp-pane-title", "Path tree");
-  treePane.append(paneTitle);
-  const treeHost = element(document, "div", "lp-tree-host");
+  // The host tree widget is gone: this pane now holds the recorded-structure
+  // graph (default) or the module-lane roadmap (alternate lens).
+  const pathPane = element(document, "section", "lp-path-pane");
+  pathPane.setAttribute("aria-label", "Path graph");
+  const paneTitle = element(document, "h2", "lp-pane-title", "Path graph");
+  pathPane.append(paneTitle);
+  const graphHost = element(document, "div", "lp-graph-host");
   const roadmapHost = element(document, "div", "lp-roadmap-host");
   roadmapHost.hidden = true;
   const treeEmpty = element(
@@ -185,10 +212,10 @@ export function mountPathHub(
     "lp-empty-state",
     "No learning paths yet. Use Create a Path to talk to the Architect.",
   );
-  treePane.append(treeHost, roadmapHost, treeEmpty);
+  pathPane.append(graphHost, roadmapHost, treeEmpty);
   const architectContainer = element(document, "div", "lp-architect-pane");
   const inspectorContainer = element(document, "div", "lp-inspector-pane");
-  body.append(treePane, architectContainer, inspectorContainer);
+  body.append(pathPane, architectContainer, inspectorContainer);
   root.append(body);
 
   let summaries: PathSummary[] = [];
@@ -204,14 +231,13 @@ export function mountPathHub(
   let loadToken = 0;
   let disposed = false;
   let startingSession = false;
-  /** The learner's lens over one path: outline tree or module lanes. */
-  let viewMode: "tree" | "roadmap" = "tree";
-  let treeHandle: PluginWidgetHandle<PluginTreeProps> | null = null;
-  /** Badge handles owned by the current roadmap render; cleared per render. */
-  let roadmapHandles: PluginWidgetHandle<unknown>[] = [];
+  /** The learner's lens over one path: recorded-structure graph or module lanes. */
+  let viewMode: "graph" | "roadmap" = "graph";
+  /** Badge handles owned by the current graph/roadmap render; cleared per render. */
+  let cardHandles: PluginWidgetHandle<unknown>[] = [];
+  /** Repositions the current graph edge layer after a host resize. */
+  let edgeLayout: (() => void) | null = null;
   const chatStatuses = new Map<string, SessionStatus>();
-  const expanded = new Map<string, boolean>();
-  const contentCache = new Map<string, ContentEntry>();
   const handles: PluginWidgetHandle<unknown>[] = [];
 
   const pane = createArchitectPane(ctx, architectContainer, signal);
@@ -264,16 +290,6 @@ export function mountPathHub(
     hubError.hidden = message === null;
   }
 
-  function expandedFor(key: string, fallback = true): boolean {
-    return expanded.get(key) ?? fallback;
-  }
-
-  function setExpanded(key: string, value: boolean): void {
-    if (disposed || signal.aborted) return;
-    expanded.set(key, value);
-    renderPathView();
-  }
-
   function selectNode(nodeId: string | null): void {
     if (disposed || signal.aborted) return;
     selectedNodeId = nodeId;
@@ -281,178 +297,42 @@ export function mountPathHub(
     renderPathView();
   }
 
-  function cachedContent(key: string, signature: string, build: () => PluginUiContent): PluginUiContent {
-    const existing = contentCache.get(key);
-    if (existing && existing.signature === signature) return existing.content;
-    const content = build();
-    contentCache.set(key, { signature, content });
-    return content;
-  }
-
-  function nodeBadges(node: PathNode, signature: string): PluginUiContent {
-    return cachedContent(`node:${node.id}`, signature, () => (host, contentSignal) => {
-      const row = element(document, "span", "lp-tree-node");
-      const labels = element(document, "span", "lp-tree-node-labels");
-      const badgeHost = element(document, "span", "lp-badge-row");
-      const titles = element(document, "span", "lp-tree-node-title", node.title);
-      labels.append(badgeHost, titles);
-      row.append(labels);
-      const nodeBadge = ctx.ui.mountBadge(
-        badgeHost,
-        { text: NODE_TYPE_LABELS[node.type], color: NODE_TYPE_COLORS[node.type] },
-        { signal: contentSignal },
-      );
-      const progressionBadge = ctx.ui.mountBadge(
-        badgeHost,
-        { text: PROGRESSION_LABELS[node.progression], color: PROGRESSION_COLORS[node.progression] },
-        { signal: contentSignal },
-      );
-      const unresolved = node.errors.filter((entry) => !entry.resolved).length;
-      const errorBadge =
-        unresolved > 0
-          ? ctx.ui.mountBadge(
-              badgeHost,
-              { text: `${unresolved} error${unresolved === 1 ? "" : "s"}`, color: "var(--chart-6, #ef4444)" },
-              { signal: contentSignal },
-            )
-          : null;
-      return () => {
-        nodeBadge.dispose();
-        progressionBadge.dispose();
-        errorBadge?.dispose();
-        row.remove();
-      };
-    });
-  }
-
-  function chatContent(
-    node: PathNode,
-    chatId: string,
-    label: string,
-    kind: string,
-    exists: boolean,
-  ): PluginUiContent {
-    return cachedContent(`chat:${node.id}:${chatId}`, `${label}:${kind}:${exists}`, () => (host, contentSignal) => {
-      const row = element(document, "span", "lp-tree-chat");
-      row.append(
-        element(
-          document,
-          "span",
-          "lp-tree-chat-label",
-          `${kind} — ${label}${exists ? "" : " (missing)"}`,
-        ),
-      );
-      const buttonHost = element(document, "span", "lp-button-host");
-      row.append(buttonHost);
-      const open = exists
-        ? ctx.ui.mountButton(
-            buttonHost,
-            {
-              label: "Open",
-              variant: "link",
-              size: "xs",
-              onClick: () => {
-                if (!signal.aborted && !contentSignal.aborted && !disposed) {
-                  ctx.app.openSession(chatId);
-                }
-              },
-            },
-            { signal: contentSignal },
-          )
-        : null;
-      host.append(row);
-      return () => {
-        open?.dispose();
-        row.remove();
-      };
-    });
-  }
-
-  function nodeRow(node: PathNode): PluginTreeRow {
-    const key = `node:${node.id}`;
-    const signature = `${node.title}\u0000${node.type}\u0000${node.progression}\u0000${node.errors.filter((entry) => !entry.resolved).length}`;
-    const unresolved = node.errors.filter((entry) => !entry.resolved).length;
-    const children = node.childSessions.map((chat) => {
-      const exists = chatStatuses.get(chat.chatId)?.exists ?? true;
-      return {
-        key: `chat:${node.id}:${chat.chatId}`,
-        content: chatContent(
-          node,
-          chat.chatId,
-          chat.label,
-          chat.kind === "teaching" ? "Teaching" : "Practice",
-          exists,
-        ),
-        cells: { state: chat.kind === "teaching" ? "Teaching" : "Practice" },
-      };
-    });
-    return {
-      key,
-      content: nodeBadges(node, signature),
-      cells: { state: unresolved > 0 ? `${unresolved} unresolved` : PROGRESSION_LABELS[node.progression] },
-      ...(children.length > 0
-        ? {
-            children,
-            disclosure: {
-              label: `Toggle child chats for ${node.title}`,
-              expanded: expandedFor(key),
-              onChange: (value: boolean) => setExpanded(key, value),
-            },
-          }
-        : {}),
-      selection: {
-        label: `Select ${node.title}`,
-        checked: selectedNodeId === node.id,
-        onChange: (value: boolean) => {
-          if (signal.aborted) return;
-          selectNode(value ? node.id : selectedNodeId === node.id ? null : selectedNodeId);
-        },
-      },
-    };
-  }
-
-  function treeRows(): PluginTreeRow[] {
-    if (!path) return [];
-    return path.modules.map((module) => {
-      const key = `module:${module.id}`;
-      const consolidated = module.nodes.filter((node) => node.progression === "consolidated").length;
-      return {
-        key,
-        content: module.title,
-        cells: { state: `${consolidated}/${module.nodes.length} consolidated` },
-        disclosure: {
-          label: `Toggle ${module.title}`,
-          expanded: expandedFor(key),
-          onChange: (value: boolean) => setExpanded(key, value),
-        },
-        children: module.nodes.map(nodeRow),
-      };
-    });
-  }
-
-  function disposeRoadmap(): void {
-    for (const handle of roadmapHandles.reverse()) handle.dispose();
-    roadmapHandles = [];
+  /** Dispose every card badge and both view hosts. Called on each render and on
+   * mount teardown, so no badge handle or DOM outlives the data it showed. */
+  function disposeCards(): void {
+    for (const handle of cardHandles.reverse()) handle.dispose();
+    cardHandles = [];
+    edgeLayout = null;
+    graphHost.replaceChildren();
     roadmapHost.replaceChildren();
   }
 
-  function roadmapCard(node: PathNode): HTMLElement {
+  /** One card pattern for both lenses: real button, badges, anchor, selection. */
+  function nodeCard(node: PathNode, kind: "graph" | "roadmap"): HTMLElement {
     const card = document.createElement("button");
     card.setAttribute("type", "button");
+    card.dataset.nodeId = node.id;
     const selected = node.id === selectedNodeId;
-    card.className = selected ? "lp-roadmap-card lp-roadmap-card-selected" : "lp-roadmap-card";
+    const classes = ["lp-node-card", kind === "graph" ? "lp-graph-card" : "lp-roadmap-card"];
+    if (selected) {
+      classes.push(
+        "lp-node-card-selected",
+        kind === "graph" ? "lp-graph-card-selected" : "lp-roadmap-card-selected",
+      );
+    }
+    card.className = classes.join(" ");
     card.setAttribute("aria-pressed", selected ? "true" : "false");
-    card.append(element(document, "span", "lp-roadmap-card-title", node.title));
-    const badges = element(document, "span", "lp-badge-row lp-roadmap-card-badges");
+    card.append(element(document, "span", "lp-node-card-title", node.title));
+    const badges = element(document, "span", "lp-badge-row lp-node-card-badges");
     card.append(badges);
-    roadmapHandles.push(
+    cardHandles.push(
       ctx.ui.mountBadge(
         badges,
         { text: NODE_TYPE_LABELS[node.type], color: NODE_TYPE_COLORS[node.type] },
         { signal },
       ),
     );
-    roadmapHandles.push(
+    cardHandles.push(
       ctx.ui.mountBadge(
         badges,
         { text: PROGRESSION_LABELS[node.progression], color: PROGRESSION_COLORS[node.progression] },
@@ -461,7 +341,7 @@ export function mountPathHub(
     );
     const unresolved = node.errors.filter((entry) => !entry.resolved).length;
     if (unresolved > 0) {
-      roadmapHandles.push(
+      cardHandles.push(
         ctx.ui.mountBadge(
           badges,
           { text: `${unresolved} unresolved`, color: "var(--chart-6, #ef4444)" },
@@ -470,7 +350,7 @@ export function mountPathHub(
       );
     }
     card.append(
-      element(document, "span", "lp-roadmap-card-anchor", formatSourceAnchor(node.sourceAnchor)),
+      element(document, "span", "lp-node-card-anchor", formatSourceAnchor(node.sourceAnchor)),
     );
     if (node.childSessions.length > 0) {
       const teaching = node.childSessions.filter((chat) => chat.kind === "teaching").length;
@@ -487,12 +367,193 @@ export function mountPathHub(
     return card;
   }
 
-  /** Module lanes with node cards: renders only recorded structure. No arrows,
-   * no dates, no order pressure — just what the Architect wrote and the
-   * learner recorded. */
+  /** Every recorded interleaving link, read in one direction: a node's
+   * `interleavesNodeIds` lists the prior nodes it builds on. This is the only
+   * edge source; the graph never infers a prerequisite. */
+  function recordedEdges(pathValue: LearningPath): GraphEdge[] {
+    const seen = new Set<string>();
+    const edges: GraphEdge[] = [];
+    for (const module of pathValue.modules) {
+      for (const node of module.nodes) {
+        for (const from of node.interleavesNodeIds) {
+          if (from === node.id) continue;
+          const key = `${from}\u0000${node.id}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          edges.push({ from, to: node.id });
+        }
+      }
+    }
+    return edges;
+  }
+
+  const round = (value: number): string => String(Math.round(value * 10) / 10);
+
+  function edgePath(from: CardBox, to: CardBox): string {
+    if (from.moduleIndex === to.moduleIndex) {
+      // Cards in one cluster are stacked: link the nearest horizontal edges.
+      const downward = from.nodeIndex < to.nodeIndex;
+      const startX = from.x + from.width / 2;
+      const startY = downward ? from.y + from.height : from.y;
+      const endX = to.x + to.width / 2;
+      const endY = downward ? to.y : to.y + to.height;
+      const bend = Math.max(18, Math.abs(endY - startY) / 2);
+      const control1 = downward ? startY + bend : startY - bend;
+      const control2 = downward ? endY - bend : endY + bend;
+      return `M ${round(startX)} ${round(startY)} C ${round(startX)} ${round(control1)}, ${round(endX)} ${round(control2)}, ${round(endX)} ${round(endY)}`;
+    }
+    // Cards in different clusters are columns side by side.
+    const forward = to.x >= from.x;
+    const startX = forward ? from.x + from.width : from.x;
+    const endX = forward ? to.x : to.x + to.width;
+    const startY = from.y + from.height / 2;
+    const endY = to.y + to.height / 2;
+    const bend = Math.max(32, Math.abs(endX - startX) / 2);
+    const control1 = startX + (forward ? bend : -bend);
+    const control2 = endX - (forward ? bend : -bend);
+    return `M ${round(startX)} ${round(startY)} C ${round(control1)} ${round(startY)}, ${round(control2)} ${round(endY)}, ${round(endX)} ${round(endY)}`;
+  }
+
+  /** A decorative SVG layer over the cards. Hidden from assistive tech: the
+   * inspector's "Interleaved prior nodes" list is the accessible record. */
+  function edgeLayer(
+    board: HTMLElement,
+    cards: ReadonlyMap<string, HTMLElement>,
+    placement: ReadonlyMap<string, NodePlacement>,
+    edges: readonly GraphEdge[],
+  ): SVGSVGElement {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "lp-graph-edges");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.setAttribute("role", "presentation");
+    const paths = edges.map((edge) => {
+      const pathElement = document.createElementNS(SVG_NS, "path");
+      pathElement.setAttribute("class", "lp-graph-edge");
+      pathElement.setAttribute("data-edge-from", edge.from);
+      pathElement.setAttribute("data-edge-to", edge.to);
+      pathElement.setAttribute("data-from", edge.from);
+      pathElement.setAttribute("data-to", edge.to);
+      svg.append(pathElement);
+      return pathElement;
+    });
+
+    const reposition = (): void => {
+      if (disposed || signal.aborted) return;
+      const boardRect = board.getBoundingClientRect();
+      const boxes = new Map<string, CardBox>();
+      let measured = boardRect.width > 0 && boardRect.height > 0;
+      let maxRight = 0;
+      let maxBottom = 0;
+      for (const [nodeId, card] of cards) {
+        const place = placement.get(nodeId);
+        if (!place) continue;
+        const rect = card.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) measured = false;
+        const box: CardBox = {
+          x: rect.left - boardRect.left,
+          y: rect.top - boardRect.top,
+          width: rect.width,
+          height: rect.height,
+          moduleIndex: place.moduleIndex,
+          nodeIndex: place.nodeIndex,
+        };
+        boxes.set(nodeId, box);
+        maxRight = Math.max(maxRight, box.x + box.width);
+        maxBottom = Math.max(maxBottom, box.y + box.height);
+      }
+
+      let width = Math.max(boardRect.width, board.scrollWidth, maxRight + FALLBACK_PADDING);
+      let height = Math.max(boardRect.height, board.scrollHeight, maxBottom + FALLBACK_PADDING);
+      if (!measured) {
+        // No layout engine (tests) or before first paint: deterministic columns.
+        let moduleCount = 1;
+        let rowCount = 1;
+        for (const place of placement.values()) {
+          moduleCount = Math.max(moduleCount, place.moduleIndex + 1);
+          rowCount = Math.max(rowCount, place.nodeIndex + 1);
+        }
+        for (const [nodeId, place] of placement) {
+          boxes.set(nodeId, {
+            x: FALLBACK_PADDING + place.moduleIndex * FALLBACK_COLUMN_WIDTH,
+            y: FALLBACK_HEADER_HEIGHT + place.nodeIndex * (FALLBACK_CARD_HEIGHT + FALLBACK_CARD_GAP),
+            width: FALLBACK_CARD_WIDTH,
+            height: FALLBACK_CARD_HEIGHT,
+            moduleIndex: place.moduleIndex,
+            nodeIndex: place.nodeIndex,
+          });
+        }
+        width = FALLBACK_PADDING * 2 + moduleCount * FALLBACK_COLUMN_WIDTH;
+        height =
+          FALLBACK_HEADER_HEIGHT + rowCount * (FALLBACK_CARD_HEIGHT + FALLBACK_CARD_GAP) + FALLBACK_PADDING;
+      }
+      svg.setAttribute("width", String(Math.ceil(Math.max(1, width))));
+      svg.setAttribute("height", String(Math.ceil(Math.max(1, height))));
+      edges.forEach((edge, index) => {
+        const pathElement = paths[index];
+        const from = boxes.get(edge.from);
+        const to = boxes.get(edge.to);
+        if (!pathElement || !from || !to) return;
+        pathElement.setAttribute("d", edgePath(from, to));
+      });
+    };
+
+    edgeLayout = reposition;
+    reposition();
+    const view = document.defaultView;
+    if (view && typeof view.requestAnimationFrame === "function") {
+      view.requestAnimationFrame(() => {
+        if (edgeLayout === reposition) reposition();
+      });
+    }
+    return svg;
+  }
+
+  /** Modules are clusters (columns), nodes are buttons, and the only lines are
+   * the recorded interleaving links. Order follows the record; nothing moves on
+   * its own. */
+  function buildGraph(): void {
+    if (!path) return;
+    const board = element(document, "div", "lp-graph");
+    const cards = new Map<string, HTMLElement>();
+    const placement = new Map<string, NodePlacement>();
+    path.modules.forEach((module, moduleIndex) => {
+      const cluster = element(document, "section", "lp-graph-cluster");
+      cluster.setAttribute("aria-label", module.title);
+      const clusterHeader = element(document, "div", "lp-graph-cluster-header");
+      clusterHeader.append(element(document, "h3", "lp-graph-cluster-title", module.title));
+      if (module.goal !== undefined) {
+        clusterHeader.append(element(document, "p", "lp-graph-cluster-goal", module.goal));
+      }
+      const consolidated = module.nodes.filter((node) => node.progression === "consolidated").length;
+      clusterHeader.append(
+        element(document, "span", "lp-muted", `${consolidated}/${module.nodes.length} consolidated`),
+      );
+      cluster.append(clusterHeader);
+      const cardList = element(document, "div", "lp-graph-cards");
+      module.nodes.forEach((node, nodeIndex) => {
+        const card = nodeCard(node, "graph");
+        card.dataset.moduleIndex = String(moduleIndex);
+        cards.set(node.id, card);
+        placement.set(node.id, { moduleIndex, nodeIndex });
+        cardList.append(card);
+      });
+      cluster.append(cardList);
+      board.append(cluster);
+    });
+    graphHost.append(board);
+    const edges = recordedEdges(path).filter(
+      (edge) => cards.has(edge.from) && cards.has(edge.to),
+    );
+    if (edges.length > 0) {
+      board.append(edgeLayer(board, cards, placement, edges));
+    }
+  }
+
+  /** Module lanes with node cards: the alternate flat lens over the same record.
+   * No arrows, no dates, no order pressure. */
   function buildRoadmap(): void {
     if (!path) return;
-    disposeRoadmap();
     const board = element(document, "div", "lp-roadmap");
     for (const module of path.modules) {
       const lane = element(document, "section", "lp-lane");
@@ -509,7 +570,7 @@ export function mountPathHub(
       lane.append(laneHeader);
       const cards = element(document, "div", "lp-lane-cards");
       for (const node of module.nodes) {
-        cards.append(roadmapCard(node));
+        cards.append(nodeCard(node, "roadmap"));
       }
       lane.append(cards);
       board.append(lane);
@@ -520,34 +581,15 @@ export function mountPathHub(
   function renderPathView(): void {
     if (disposed || signal.aborted) return;
     const roadmap = viewMode === "roadmap" && path !== null && path.modules.length >= 2;
-    paneTitle.textContent = roadmap ? "Path roadmap" : "Path tree";
+    paneTitle.textContent = roadmap ? "Path roadmap" : "Path graph";
+    pathPane.setAttribute("aria-label", roadmap ? "Path roadmap" : "Path graph");
     treeEmpty.hidden = path !== null;
-    treeHost.hidden = path === null || roadmap;
+    graphHost.hidden = path === null || roadmap;
     roadmapHost.hidden = path === null || !roadmap;
-    if (path === null) {
-      disposeRoadmap();
-      return;
-    }
-    if (!roadmap) {
-      disposeRoadmap();
-    } else {
-      // One pane, one live widget: leaving roadmap mode remounts the tree.
-      treeHandle?.dispose();
-      treeHandle = null;
-      buildRoadmap();
-      return;
-    }
-    const props: PluginTreeProps = {
-      label: "Path hierarchy",
-      header: "Path",
-      rows: treeRows(),
-      columns: [{ key: "state", header: "State", width: 136 }],
-    };
-    if (!treeHandle) {
-      treeHandle = ctx.ui.mountTree(treeHost, props, { signal });
-    } else {
-      treeHandle.update(props);
-    }
+    disposeCards();
+    if (path === null) return;
+    if (roadmap) buildRoadmap();
+    else buildGraph();
   }
 
   function renderInspector(): void {
@@ -591,8 +633,8 @@ export function mountPathHub(
     const multiModule = path !== null && path.modules.length >= 2;
     viewHost.hidden = !multiModule;
     viewModeButton.update({
-      label: viewMode === "tree" ? "Roadmap view" : "Tree view",
-      variant: viewMode === "tree" ? "outline" : "secondary",
+      label: viewMode === "graph" ? "Roadmap view" : "Graph view",
+      variant: viewMode === "graph" ? "outline" : "secondary",
     });
     // Keep the Architect visible while there is no path yet: that is how one is made.
     architectContainer.hidden = !refineOpen && summaries.length > 0;
@@ -602,7 +644,7 @@ export function mountPathHub(
     if (disposed || signal.aborted) return;
     renderHeader();
     // The overview is the dashboard over existing paths; an empty hub keeps a
-    // single empty state (the tree's) instead of two identical messages.
+    // single empty state (the path pane's) instead of two identical messages.
     overviewContainer.hidden = summaries.length === 0;
     overview.render(summaries, selectedPathId);
     renderPathView();
@@ -941,7 +983,7 @@ export function mountPathHub(
       size: "sm",
       onClick: () => {
         if (signal.aborted || disposed) return;
-        viewMode = viewMode === "tree" ? "roadmap" : "tree";
+        viewMode = viewMode === "graph" ? "roadmap" : "graph";
         renderHeader();
         renderPathView();
       },
@@ -992,6 +1034,12 @@ export function mountPathHub(
     if (id) void pane.load(id);
   });
 
+  const onViewResize = (): void => {
+    if (!disposed && !signal.aborted) edgeLayout?.();
+  };
+  const defaultView = document.defaultView;
+  if (defaultView) defaultView.addEventListener("resize", onViewResize);
+
   const onAbort = (): void => {
     if (disposed) return;
     disposed = true;
@@ -999,15 +1047,13 @@ export function mountPathHub(
     offNotification();
     offNavigation();
     offResync();
+    if (defaultView) defaultView.removeEventListener("resize", onViewResize);
     for (const handle of handles.reverse()) handle.dispose();
     handles.length = 0;
-    treeHandle?.dispose();
-    treeHandle = null;
-    disposeRoadmap();
+    disposeCards();
     inspector.dispose();
     overview.dispose();
     pane.dispose();
-    contentCache.clear();
     root.remove();
   };
   signal.addEventListener("abort", onAbort, { once: true });
