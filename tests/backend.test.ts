@@ -601,6 +601,7 @@ test("paths.list summarizes stored paths without loading tool state", async (t) 
       pendingPivotCount: 1,
       unresolvedErrorCount: 1,
       tags: [],
+      folder: null,
       architectChatId: "conversation-1",
     },
   ]);
@@ -714,6 +715,71 @@ test("paths.updateMeta stores learner grouping tags without touching the curricu
     /at most 8 entries/,
   );
   await assert.rejects(h.call("paths.updateMeta", { pathId: "path-missing", tags: [] }), /Unknown path/);
+});
+
+test("paths.updateMeta files a path into one folder hierarchy and clears it on empty", async (t) => {
+  const h = host(t);
+  await createConversation(h);
+  await h.runTool("save_learning_path", rawPath());
+
+  const filed = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: [],
+    folder: "exam/step-2",
+  });
+  assert.equal(filed.path.folder, "exam/step-2");
+  assert.equal(filed.path.createdAt, AT, "filing does not rewrite path identity");
+
+  const listed = await h.call<{ paths: any[] }>("paths.list");
+  assert.equal(listed.paths[0].folder, "exam/step-2", "the overview summary carries the folder");
+
+  const retagged = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: ["field:systems"],
+  });
+  assert.equal(retagged.path.folder, "exam/step-2", "an omitted folder leaves the filing alone");
+
+  const cleared = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: [],
+    folder: "",
+  });
+  assert.equal(cleared.path.folder, undefined, "an empty folder drops the key entirely");
+  const reloaded = await h.call<{ path: any }>("paths.get", { id: "path-linear-algebra" });
+  assert.equal(reloaded.path.folder, undefined, "the store round-trips the cleared record");
+
+  await h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [], folder: "field/systems" });
+  const nulled = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: [],
+    folder: null,
+  });
+  assert.equal(nulled.path.folder, undefined, "null also clears, mirroring tags");
+
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [], folder: 7 }),
+    /folder must be a string or null/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [], folder: "exam/" }),
+    /folder \(level 2\): must not be empty/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [], folder: "x".repeat(41) }),
+    /folder \(level 1\): must be at most 40 characters/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", {
+      pathId: "path-linear-algebra",
+      tags: [],
+      folder: "a/b/c/d/e/f/g",
+    }),
+    /a folder has at most 6 levels/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-missing", tags: [], folder: "exam/step-2" }),
+    /Unknown path/,
+  );
 });
 
 test("paths.export renders validated JSON and Markdown with download metadata", async (t) => {

@@ -200,6 +200,7 @@ export function exportLearningPathAsMarkdown(
       ...(parsed.tags === undefined || parsed.tags.length === 0
         ? []
         : [`- **Tags:** ${parsed.tags.join(", ")}`]),
+      ...(parsed.folder === undefined ? [] : [`- **Folder:** ${parsed.folder}`]),
       ...(parsed.artifactDefault
         ? [`- **Default artifact:** ${artifactLabel(parsed.artifactDefault)}`]
         : []),
