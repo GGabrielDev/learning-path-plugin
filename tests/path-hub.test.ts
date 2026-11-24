@@ -602,6 +602,45 @@ test("onResync re-reads paths and the Architect conversation after missed notifi
   }
 });
 
+test("the detailed view floats: it never squeezes the graph, and Close deselects", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({
+    paths: [path],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+
+    // The inspector is a floating sibling of the body, not a grid column, so
+    // the path graph and the Architect conversation keep their full width.
+    const body = fixture.root.querySelector<HTMLElement>(".lp-hub-body")!;
+    const pane = fixture.root.querySelector<HTMLElement>(".lp-inspector-pane")!;
+    assert.notEqual(pane.parentElement, body, "the detailed view is not a body column");
+    assert.equal(pane.hidden, false, "the first selected node opens the floating details");
+
+    const close = liveButtons(fixture).find((button) => button.props.label === "Close")!;
+    assert.ok(close, "the floating pane carries a close control");
+    await close.props.onClick();
+    await fixture.flush();
+
+    assert.equal(pane.hidden, true, "closing deselects and hides the floating window");
+    assert.ok(!fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId);
+    assert.equal(graphCard(fixture.root, "n-holistic").getAttribute("aria-pressed"), "false");
+    assert.equal(
+      body.querySelectorAll(":scope > *").length,
+      2,
+      "the body keeps exactly the graph pane and the Architect pane",
+    );
+
+    // Reopening via a card click brings the same inspector back.
+    await selectGraphNode(fixture.root, "n-concept");
+    assert.equal(pane.hidden, false);
+    assert.equal(fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId, "n-concept");
+  } finally {
+    fixture.restore();
+  }
+});
+
 test("an empty hub offers Create a Path and does not invent a graph or inspector node", async () => {
   const fixture = createViewFixture();
   try {

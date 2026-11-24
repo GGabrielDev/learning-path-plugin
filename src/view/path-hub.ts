@@ -216,9 +216,21 @@ export function mountPathHub(
   );
   pathPane.append(graphHost, roadmapHost, pathEmpty);
   const architectContainer = element(document, "div", "lp-architect-pane");
-  const inspectorContainer = element(document, "div", "lp-inspector-pane");
-  body.append(pathPane, architectContainer, inspectorContainer);
+  body.append(pathPane, architectContainer);
   root.append(body);
+
+  // The detailed view floats above the hub instead of taking a grid column:
+  // the path graph/roadmap pane and the Architect conversation keep full
+  // width, and the inspector opens on node selection and closes on demand.
+  const inspectorContainer = element(document, "aside", "lp-inspector-pane");
+  inspectorContainer.setAttribute("aria-label", "Node details");
+  inspectorContainer.hidden = true;
+  const inspectorBar = element(document, "div", "lp-inspector-bar");
+  inspectorBar.append(element(document, "span", "lp-inspector-bar-title", "Node details"));
+  const inspectorCloseHost = element(document, "span", "lp-button-host");
+  inspectorBar.append(inspectorCloseHost);
+  inspectorContainer.append(inspectorBar);
+  root.append(inspectorContainer);
 
   let summaries: PathSummary[] = [];
   let path: LearningPath | null = null;
@@ -611,6 +623,7 @@ export function mountPathHub(
   function renderInspector(): void {
     if (disposed || signal.aborted) return;
     const node = path ? nodeById(path, selectedNodeId) : null;
+    inspectorContainer.hidden = node === null;
     inspector.render(path, node);
   }
 
@@ -990,6 +1003,21 @@ export function mountPathHub(
     { signal },
   );
   handles.push(exportButton);
+
+  const inspectorCloseButton = ctx.ui.mountButton(
+    inspectorCloseHost,
+    {
+      label: "Close",
+      variant: "ghost",
+      size: "xs",
+      onClick: () => {
+        if (signal.aborted || disposed) return;
+        selectNode(null);
+      },
+    },
+    { signal },
+  );
+  handles.push(inspectorCloseButton);
 
   const viewModeButton = ctx.ui.mountButton(
     viewHost,
