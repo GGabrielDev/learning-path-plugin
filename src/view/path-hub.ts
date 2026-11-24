@@ -290,11 +290,25 @@ export function mountPathHub(
     hubError.hidden = message === null;
   }
 
+  /** Paint selection on the existing cards instead of rebuilding the view, so
+   * a keyboard-triggered selection keeps focus on its card. */
+  function applySelection(): void {
+    for (const card of root.querySelectorAll<HTMLElement>(".lp-node-card")) {
+      const isSelected = selectedNodeId !== null && card.dataset.nodeId === selectedNodeId;
+      const selectedClass = card.classList.contains("lp-graph-card")
+        ? "lp-graph-card-selected"
+        : "lp-roadmap-card-selected";
+      card.classList.toggle("lp-node-card-selected", isSelected);
+      card.classList.toggle(selectedClass, isSelected);
+      card.setAttribute("aria-pressed", isSelected ? "true" : "false");
+    }
+  }
+
   function selectNode(nodeId: string | null): void {
     if (disposed || signal.aborted) return;
     selectedNodeId = nodeId;
+    applySelection();
     renderInspector();
-    renderPathView();
   }
 
   /** Dispose every card badge and both view hosts. Called on each render and on

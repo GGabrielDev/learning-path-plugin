@@ -152,7 +152,7 @@ test("graph renders module clusters and node cards with badges and preserves sel
     );
 
     const initialArchitectCalls = fixture.calls.filter((call) => call.name.startsWith("architect")).length;
-    selectGraphNode(fixture.root, "n-concept");
+    const conceptCard = selectGraphNode(fixture.root, "n-concept");
     await fixture.flush();
     const inspector = fixture.root.querySelector<HTMLElement>(".lp-inspector")!;
     assert.equal(inspector.dataset.nodeId, "n-concept");
@@ -172,6 +172,11 @@ test("graph renders module clusters and node cards with badges and preserves sel
       "the selected card is marked",
     );
     assert.match(graphCard(fixture.root, "n-concept").className, /lp-graph-card-selected/);
+    assert.equal(
+      graphCard(fixture.root, "n-concept"),
+      conceptCard,
+      "selection repaints in place, so keyboard focus stays on the card",
+    );
 
     const interleaved = liveButtons(fixture).find((button) => button.props.label === "Node n-holistic");
     assert.ok(interleaved, "interleaved prior nodes are followable links");
