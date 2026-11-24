@@ -129,7 +129,13 @@ test("tree renders modules, nodes and child chats with badges and preserves sele
     assert.equal(row(tree, "module:module-structure").content, "Structure first");
     assert.equal(row(tree, "module:module-structure").cells?.state, "1/3 consolidated");
     assert.deepEqual(
-      fixture.all("mountBadge").slice(0, 6).map((badge) => badge.props.text),
+      fixture
+        .all("mountBadge")
+        // Tree node badges mount into `lp-badge-row` hosts; overview and
+        // inspector badges use `lp-badge-host`, so this scopes the assertion.
+        .filter((badge) => badge.container.className === "lp-badge-row")
+        .slice(0, 6)
+        .map((badge) => badge.props.text),
       ["Holistic", "Consolidated", "Concept", "In progress", "Skill", "Unstarted"],
     );
 

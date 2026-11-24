@@ -29,7 +29,7 @@ import type {
   PluginUiContent,
   PluginView,
 } from "learnharness-plugin-api";
-import type { ChildSessionKind, ChildSessionLink, LearningPath, PluginSettings } from "../src/domain.ts";
+import type { ChildSessionKind, ChildSessionLink, LearningPath, PluginSettings, ProgressionState } from "../src/domain.ts";
 import { exportLearningPath } from "../src/export.ts";
 import { buildChildSessionBrief } from "../src/framework.ts";
 import { resolvePivotSuggestion, updateErrorEntry } from "../src/session-links.ts";
@@ -103,14 +103,30 @@ export interface ViewFixture {
 }
 
 function summarize(path: LearningPath): PathSummary {
+  const nodes = path.modules.flatMap((module) => module.nodes);
+  const nodeStates: Record<ProgressionState, number> = {
+    unstarted: 0,
+    in_progress: 0,
+    consolidated: 0,
+  };
+  for (const node of nodes) nodeStates[node.progression] += 1;
+  const spine = path.sourceSpine;
   return {
     id: path.id,
     title: path.title,
     goal: path.goal,
     updatedAt: path.updatedAt,
     moduleCount: path.modules.length,
-    nodeCount: path.modules.reduce((total, module) => total + module.nodes.length, 0),
-    sourceMode: path.sourceSpine.mode,
+    nodeCount: nodes.length,
+    sourceMode: spine.mode,
+    sourceTitles:
+      spine.mode === "canonical"
+        ? spine.references.map((reference) => reference.title)
+        : spine.sources.map((source) => source.name),
+    nodeStates,
+    pendingPivotCount: nodes.flatMap((node) => node.pivotSuggestions).filter((pivot) => pivot.status === "pending").length,
+    unresolvedErrorCount: nodes.flatMap((node) => node.errors).filter((error) => !error.resolved).length,
+    tags: path.tags ?? [],
     architectChatId: path.architectChatId ?? null,
   };
 }
@@ -453,6 +469,29 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
           ...found,
           updatedAt: "2026-02-01T00:00:00.000Z",
           modules,
+        };
+        paths.set(updated.id, updated);
+        return Promise.resolve({ path: structuredClone(updated) } as T);
+      }
+      case "paths.updateMeta": {
+        const found = paths.get(value.pathId);
+        if (!found) return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));
+        if (!Array.isArray(value.tags)) {
+          return Promise.reject(new Error("tags must be an array."));
+        }
+        const { tags: _previous, ...withoutTags } = found;
+        const tags: string[] = value.tags.map(String);
+        const seen = new Set<string>();
+        for (const tag of tags) {
+          if (seen.has(tag.toLowerCase())) {
+            return Promise.reject(new Error(`duplicate tag "${tag}"`));
+          }
+          seen.add(tag.toLowerCase());
+        }
+        const updated: LearningPath = {
+          ...withoutTags,
+          updatedAt: "2026-02-01T00:00:00.000Z",
+          ...(tags.length === 0 ? {} : { tags }),
         };
         paths.set(updated.id, updated);
         return Promise.resolve({ path: structuredClone(updated) } as T);

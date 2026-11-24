@@ -33,6 +33,7 @@ import {
 } from "../domain.ts";
 import { EVENT_ARCHITECT_CHANGED, EVENT_PATHS_CHANGED } from "../topics.ts";
 import { createArchitectPane } from "./architect-pane.ts";
+import { createPathsOverview } from "./paths-overview.ts";
 import { createNodeInspector } from "./node-inspector.ts";
 import type { NodeInspectorChange } from "./node-inspector.ts";
 import type { ErrorLedgerChange } from "./error-ledger.ts";
@@ -47,7 +48,9 @@ import {
   artifactLabel,
 } from "./labels.ts";
 
-/** The backend's `paths.list` projection; not a second full path payload. */
+/** The backend's `paths.list` projection; not a second full path payload.
+ * Mirrored by the backend's own `summarize` and the test host: keep all three
+ * in sync when a field is added. */
 export interface PathSummary {
   readonly id: string;
   readonly title: string;
@@ -56,6 +59,14 @@ export interface PathSummary {
   readonly moduleCount: number;
   readonly nodeCount: number;
   readonly sourceMode: "canonical" | "uploaded";
+  /** Spine titles for the overview card: canonical references or uploads. */
+  readonly sourceTitles: readonly string[];
+  /** Ungated node-state inventory: honest counts, never a completion target. */
+  readonly nodeStates: Readonly<Record<ProgressionState, number>>;
+  readonly pendingPivotCount: number;
+  readonly unresolvedErrorCount: number;
+  /** Learner-owned grouping tags; absent on old paths reads as none. */
+  readonly tags: readonly string[];
   readonly architectChatId?: string | null;
 }
 
@@ -156,6 +167,9 @@ export function mountPathHub(
   root.append(hubError);
 
   const body = element(document, "div", "lp-hub-body");
+  const overviewContainer = element(document, "section", "lp-overview-pane");
+  overviewContainer.setAttribute("aria-label", "Paths overview");
+  root.append(overviewContainer);
   const treePane = element(document, "section", "lp-tree-pane");
   treePane.setAttribute("aria-label", "Path hierarchy");
   treePane.append(element(document, "h2", "lp-pane-title", "Path tree"));
@@ -221,6 +235,15 @@ export function mountPathHub(
     },
     discussPivot(pivot, node) {
       return discussPivot(pivot, node);
+    },
+  });
+
+  const overview = createPathsOverview(ctx, overviewContainer, signal, {
+    selectPath(pathId) {
+      if (pathId !== selectedPathId) void selectPath(pathId);
+    },
+    tagsChanged() {
+      void refreshAll();
     },
   });
 
@@ -461,6 +484,10 @@ export function mountPathHub(
   function renderAll(): void {
     if (disposed || signal.aborted) return;
     renderHeader();
+    // The overview is the dashboard over existing paths; an empty hub keeps a
+    // single empty state (the tree's) instead of two identical messages.
+    overviewContainer.hidden = summaries.length === 0;
+    overview.render(summaries, selectedPathId);
     renderTree();
     renderInspector();
   }
@@ -843,6 +870,7 @@ export function mountPathHub(
     treeHandle?.dispose();
     treeHandle = null;
     inspector.dispose();
+    overview.dispose();
     pane.dispose();
     contentCache.clear();
     root.remove();
