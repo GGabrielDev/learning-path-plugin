@@ -1,8 +1,8 @@
 # Native LearnHarness folders ↔ Learning Path multi-chat attachment research
 
-**Date:** 2026-11-23  
-**Question:** Can native LearnHarness chat folders be combined with Learning Path's existing ability to attach multiple chats to a node without private APIs, host-data writes, inferred mastery, or production data?  
-**Decision target:** choose a bounded experimental first slice and identify any SDK gap.  
+**Date:** 2026-11-23
+**Question:** Can native LearnHarness chat folders be combined with Learning Path's existing ability to attach multiple chats to a node without private APIs, host-data writes, inferred mastery, or production data?
+**Decision target:** choose a bounded experimental first slice and identify any SDK gap.
 **Inspected revisions:** Learning Path `experimental` `7fcb7ed3444d4b61d3a36b50c14e35380f0d31eb`; LearnHarness tag `v0.7.0` `a2383f8b5557c508926282da22d7d941c1aadafe` (peeled source commit `0292b85bcce080cc685f85d174a8cb2cc553a0ad`). Source inspection only; tests were not run.
 
 ## Answer
