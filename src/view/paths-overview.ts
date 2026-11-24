@@ -77,6 +77,11 @@ function distinctTags(summaries: readonly PathSummary[]): readonly string[] {
   return tags.sort((a, b) => a.localeCompare(b));
 }
 
+/** The overview shows at most this many path cards at once, with an honest
+ * pager between pages. Paging is presentation, not hiding: every path is
+ * reachable, and the count line always reports the whole filtered set. */
+export const OVERVIEW_PAGE_SIZE = 5;
+
 function countLabel(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -268,6 +273,8 @@ export function createPathsOverview(
   let disposed = false;
   let filterTag: string | null = null;
   let searchQuery = "";
+  let pageNumber = 0;
+  let resultsSignature = "";
 
   /** "" means all paths, `UNFILED_FOLDER` means unfiled, else a folder subtree. */
   let filterFolder = "";
@@ -276,6 +283,7 @@ export function createPathsOverview(
   let latestSummaries: readonly PathSummary[] = [];
   let cardsHost: HTMLElement | null = null;
   let countHost: HTMLElement | null = null;
+  let pagerHost: HTMLElement | null = null;
 
   const clearCards = (): void => {
     for (const handle of cardHandles.reverse()) handle.dispose();
@@ -570,11 +578,66 @@ export function createPathsOverview(
     );
     count.textContent = `${visible.length} of ${latestSummaries.length} paths`;
     if (visible.length === 0 && latestSummaries.length > 0) {
+      pagerHost?.replaceChildren();
       cards.append(element(document, "p", "lp-empty-state", emptyMessage()));
       return;
     }
-    for (const summary of visible) {
+
+    // A changed search, tag, folder or sort restarts at the first page; a
+    // shrunken result set clamps the held page into range.
+    const signature = `${filterTag ?? ""}\u0000${filterFolder}\u0000${searchQuery.trim().toLowerCase()}\u0000${sortKey}`;
+    if (signature !== resultsSignature) {
+      resultsSignature = signature;
+      pageNumber = 0;
+    }
+    const pageCount = Math.max(1, Math.ceil(visible.length / OVERVIEW_PAGE_SIZE));
+    if (pageNumber >= pageCount) pageNumber = pageCount - 1;
+    const page = visible.slice(
+      pageNumber * OVERVIEW_PAGE_SIZE,
+      (pageNumber + 1) * OVERVIEW_PAGE_SIZE,
+    );
+    for (const summary of page) {
       card(summary, summary.id === selectedPathId);
+    }
+
+    const pager = pagerHost;
+    pager?.replaceChildren();
+    if (pager && pageCount > 1) {
+      const previous = ctx.ui.mountButton(
+        pager,
+        {
+          label: "Previous",
+          variant: "outline",
+          size: "xs",
+          disabled: pageNumber === 0,
+          onClick: () => {
+            if (disposed || signal.aborted) return;
+            pageNumber = Math.max(0, pageNumber - 1);
+            renderResults(selectedPathId);
+          },
+        },
+        { signal },
+      );
+      cardHandles.push(previous);
+      pager.append(
+        element(document, "span", "lp-muted lp-overview-pager-status", `Page ${pageNumber + 1} of ${pageCount}`),
+      );
+      const next = ctx.ui.mountButton(
+        pager,
+        {
+          label: "Next",
+          variant: "outline",
+          size: "xs",
+          disabled: pageNumber >= pageCount - 1,
+          onClick: () => {
+            if (disposed || signal.aborted) return;
+            pageNumber = Math.min(pageCount - 1, pageNumber + 1);
+            renderResults(selectedPathId);
+          },
+        },
+        { signal },
+      );
+      cardHandles.push(next);
     }
   }
 
@@ -710,6 +773,8 @@ export function createPathsOverview(
 
     cardsHost = element(document, "div", "lp-overview-cards");
     root.append(cardsHost);
+    pagerHost = element(document, "div", "lp-overview-pager");
+    root.append(pagerHost);
     renderResults(selectedPathId);
   }
 

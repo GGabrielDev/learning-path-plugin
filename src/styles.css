@@ -125,6 +125,11 @@
   }
 }
 
+/* With the Architect pane hidden, the path graph/roadmap spans the section. */
+.lp-hub-body-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 /* The detailed view floats above the hub; it never squeezes the path
  * graph or the Architect conversation out of their width. */
 .lp-inspector-pane {
@@ -148,11 +153,16 @@
 }
 
 .lp-inspector-bar {
+  position: sticky;
+  top: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 4px 8px;
+  padding: 0 0 6px;
+  background: var(--card, var(--background));
+  z-index: 1;
 }
 
 .lp-inspector-bar-title {
@@ -455,6 +465,17 @@
   color: var(--muted-foreground, var(--foreground));
 }
 
+.lp-overview-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.lp-overview-pager-status {
+  font-size: 0.85rem;
+}
+
 .lp-overview-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(20rem, 100%), 1fr));
@@ -535,7 +556,7 @@
 }
 
 .lp-tag {
-  padding: 1px 8px;
+  padding: 2px 10px;
   border: 1px solid var(--border, #e4e4e7);
   border-radius: 999px;
   font-size: 0.78rem;
@@ -545,8 +566,9 @@
 .lp-tags-dialog {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   min-width: min(26rem, 80vw);
+  padding: 2px 2px 6px;
 }
 
 .lp-input {

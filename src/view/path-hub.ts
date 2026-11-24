@@ -236,6 +236,8 @@ export function mountPathHub(
   let path: LearningPath | null = null;
   let selectedPathId: string | null = null;
   let selectedNodeId: string | null = null;
+  /** The learner closed the detailed view; refreshes keep it closed. */
+  let nodeDeselected = false;
   let refineOpen = false;
   /** Path whose Architect conversation was last opened automatically. Background
    * refreshes for the same path never switch away from the conversation in view. */
@@ -321,6 +323,9 @@ export function mountPathHub(
   function selectNode(nodeId: string | null): void {
     if (disposed || signal.aborted) return;
     selectedNodeId = nodeId;
+    // Closing the detailed view is an explicit learner choice: background
+    // refreshes must not silently reselect a node and reopen the window.
+    nodeDeselected = nodeId === null;
     applySelection();
     renderInspector();
   }
@@ -550,9 +555,6 @@ export function mountPathHub(
       cluster.setAttribute("aria-label", module.title);
       const clusterHeader = element(document, "div", "lp-graph-cluster-header");
       clusterHeader.append(element(document, "h3", "lp-graph-cluster-title", module.title));
-      if (module.goal !== undefined) {
-        clusterHeader.append(element(document, "p", "lp-graph-cluster-goal", module.goal));
-      }
       const consolidated = module.nodes.filter((node) => node.progression === "consolidated").length;
       clusterHeader.append(
         element(document, "span", "lp-muted", `${consolidated}/${module.nodes.length} consolidated`),
@@ -586,11 +588,9 @@ export function mountPathHub(
     for (const module of path.modules) {
       const lane = element(document, "section", "lp-lane");
       lane.setAttribute("aria-label", module.title);
+      // Compact header: the module goal belongs in the detailed view, not here.
       const laneHeader = element(document, "div", "lp-lane-header");
       laneHeader.append(element(document, "h3", "lp-lane-title", module.title));
-      if (module.goal !== undefined) {
-        laneHeader.append(element(document, "p", "lp-lane-goal", module.goal));
-      }
       const consolidated = module.nodes.filter((node) => node.progression === "consolidated").length;
       laneHeader.append(
         element(document, "span", "lp-muted", `${consolidated}/${module.nodes.length} consolidated`),
@@ -667,6 +667,9 @@ export function mountPathHub(
     });
     // Keep the Architect visible while there is no path yet: that is how one is made.
     architectContainer.hidden = !refineOpen && summaries.length > 0;
+    // With the Architect pane closed, the path graph/roadmap owns the whole
+    // section instead of an empty second grid column.
+    body.classList.toggle("lp-hub-body-single", architectContainer.hidden);
   }
 
   function renderAll(): void {
@@ -685,9 +688,8 @@ export function mountPathHub(
       selectedNodeId = null;
       return;
     }
-    if (!nodeById(path, selectedNodeId)) {
-      selectedNodeId = path.modules[0]?.nodes[0]?.id ?? null;
-    }
+    if (nodeById(path, selectedNodeId)) return;
+    selectedNodeId = nodeDeselected ? null : path.modules[0]?.nodes[0]?.id ?? null;
   }
 
   async function refreshChatStatuses(token: number, pathId: string): Promise<void> {
@@ -725,6 +727,7 @@ export function mountPathHub(
         if (created?.architectChatId && created.architectChatId === pane.conversationId()) {
           selectedPathId = created.id;
           selectedNodeId = null;
+          nodeDeselected = false;
         }
       }
       if (!selectedPathId || !summaries.some((entry) => entry.id === selectedPathId)) {
@@ -764,6 +767,7 @@ export function mountPathHub(
     if (disposed || signal.aborted || pathId === selectedPathId) return;
     selectedPathId = pathId;
     selectedNodeId = null;
+    nodeDeselected = false;
     await refreshAll();
     // An explicit path selection takes precedence over an unsent new-path draft.
     if (path?.id === pathId && path.architectChatId && pane.isNewDraft()) {
@@ -831,6 +835,7 @@ export function mountPathHub(
       if (decision === "accept" && result.insertedNode) {
         // Show the inserted repair node so its anchor and goal are visible.
         selectedNodeId = result.insertedNode.id;
+        nodeDeselected = false;
       }
       ensureSelection();
       showError(null);
@@ -1008,7 +1013,7 @@ export function mountPathHub(
     inspectorCloseHost,
     {
       label: "Close",
-      variant: "ghost",
+      variant: "outline",
       size: "xs",
       onClick: () => {
         if (signal.aborted || disposed) return;
@@ -1060,6 +1065,7 @@ export function mountPathHub(
   const offNavigation = subscribePathHubTarget((target) => {
     if (signal.aborted || disposed) return;
     consumePathHubTarget();
+    nodeDeselected = false;
     if (path?.id === target.pathId) {
       selectedPathId = target.pathId;
       selectedNodeId = target.nodeId;

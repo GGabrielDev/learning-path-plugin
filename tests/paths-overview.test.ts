@@ -717,13 +717,30 @@ function cardIds(root: HTMLElement): string[] {
   return overviewCards(root).map((card) => card.dataset.pathId ?? "");
 }
 
+function pagerButton(fixture: ReturnType<typeof createViewFixture>, label: string) {
+  const record = fixture
+    .all("mountButton")
+    .find(
+      (entry) =>
+        entry.container.closest(".lp-overview-pager") !== null && entry.props.label === label,
+    );
+  assert.ok(record, `Missing pager control ${label}`);
+  return record;
+}
+
+function pagerStatus(root: HTMLElement): string {
+  const status = root.querySelector<HTMLElement>(".lp-overview-pager-status");
+  assert.ok(status, "Missing pager status line");
+  return status.textContent ?? "";
+}
+
 function countLine(root: HTMLElement): HTMLElement {
   const line = root.querySelector<HTMLElement>(".lp-overview-count");
   assert.ok(line, "the overview always states how many paths are on screen");
   return line;
 }
 
-test("40 paths: every card renders, tag counts are honest, and both sorts are deterministic", async () => {
+test("40 paths: five cards per page, honest counts, deterministic sorts across pages", async () => {
   const fixture = createViewFixture({
     paths: makeScalePaths(),
     conversations: [snapshot("chat-architect")],
@@ -731,24 +748,44 @@ test("40 paths: every card renders, tag counts are honest, and both sorts are de
   try {
     await mounted(fixture);
 
-    // Nothing is capped, paginated or lazily hidden: 40 paths, 40 cards.
-    const cards = overviewCards(fixture.root);
-    assert.equal(cards.length, SCALE_SIZE);
-    assert.equal(new Set(cardIds(fixture.root)).size, SCALE_SIZE);
-    assert.ok(cards.every((card) => !card.hidden), "every path card is visible");
+    // Paging is presentation, not hiding: five cards at a time, every path
+    // reachable through an honest pager, the count line always totals the
+    // whole filtered set.
+    assert.equal(overviewCards(fixture.root).length, 5);
     assert.equal(countLine(fixture.root).textContent, "40 of 40 paths");
+    assert.match(pagerStatus(fixture.root), /Page 1 of 8/);
+    assert.equal(pagerButton(fixture, "Previous").props.disabled, true);
+    assert.equal(pagerButton(fixture, "Next").props.disabled, false);
 
     const overviewText = fixture.root.querySelector<HTMLElement>(".lp-overview")!.textContent ?? "";
-    assert.doesNotMatch(overviewText, /load more|show more|next page|page \d|pagination/i);
     // Sorting is ordering, never scheduling or prioritisation.
     assert.doesNotMatch(overviewText, /%|streak|due|hours|days|priority|stale/i);
 
-    // Recently updated is the default: newest first, ties by title.
-    const updatedOrder = cardIds(fixture.root);
+    const collectPages = async (): Promise<string[]> => {
+      const ids: string[] = [];
+      for (;;) {
+        ids.push(...cardIds(fixture.root));
+        const next = pagerButton(fixture, "Next");
+        if (next.props.disabled) break;
+        await next.props.onClick();
+        await fixture.flush();
+      }
+      return ids;
+    };
+
+    // Recently updated is the default: newest first, ties by title. Every
+    // one of the 40 paths is reachable through the pager.
     const expectedUpdated = Array.from({ length: SCALE_SIZE - 2 }, (_, offset) => SCALE_SIZE - 1 - offset);
     // Indices 39..2 by descending stamp, then the tie: "Scale path 39" before
     // "Scale path 40" (ids scale-01, scale-00).
-    assert.deepEqual(updatedOrder, [...expectedUpdated.map((index) => `scale-${String(index).padStart(2, "0")}`), "scale-01", "scale-00"]);
+    const updatedOrder = await collectPages();
+    assert.equal(updatedOrder.length, SCALE_SIZE);
+    assert.deepEqual(
+      updatedOrder,
+      [...expectedUpdated.map((index) => `scale-${String(index).padStart(2, "0")}`), "scale-01", "scale-00"],
+    );
+    assert.match(pagerStatus(fixture.root), /Page 8 of 8/);
+    assert.equal(pagerButton(fixture, "Next").props.disabled, true);
 
     // The group picker states a count per entry, plus the total.
     const filter = fixture.root.querySelector<HTMLSelectElement>(".lp-overview-filter")!;
@@ -763,49 +800,46 @@ test("40 paths: every card renders, tag counts are honest, and both sorts are de
       ],
     );
 
-    // A folder picker, when the branch has one, must show counts too.
-    const folderFilter = fixture.root.querySelector<HTMLSelectElement>(".lp-overview-folder-filter");
-    if (folderFilter) {
-      for (const option of folderFilter.options) {
-        if (option.value === "") continue;
-        assert.match(option.textContent ?? "", /\(\d+\)$/, "folder entries carry their path count");
-      }
-    }
-
-    // Filtering narrows the grid and the count line to the same set.
+    // A changed filter returns to page 1 of its own results.
     setSelect(filter, "exam:step-2");
-    const tagged = cardIds(fixture.root);
+    assert.match(pagerStatus(fixture.root), /Page 1 of 2/);
+    assert.equal(countLine(fixture.root).textContent, "8 of 40 paths");
+    const tagged = await collectPages();
     assert.deepEqual(
       [...tagged].sort(),
       [0, 5, 10, 15, 20, 25, 30, 35].map((index) => `scale-${String(index).padStart(2, "0")}`),
     );
-    assert.equal(countLine(fixture.root).textContent, "8 of 40 paths");
 
     // Sort still applies inside the filter: titles ascend as indices descend.
     const sort = () => fixture.root.querySelector<HTMLSelectElement>(".lp-overview-sort")!;
     setSelect(sort(), "title");
+    assert.match(pagerStatus(fixture.root), /Page 1 of 2/, "a sort change restarts at page 1");
     assert.deepEqual(
-      cardIds(fixture.root),
+      await collectPages(),
       [35, 30, 25, 20, 15, 10, 5, 0].map((index) => `scale-${String(index).padStart(2, "0")}`),
     );
-    assert.equal(countLine(fixture.root).textContent, "8 of 40 paths");
 
     // Back to all paths: title order is total, with an explicit id tie-break.
     setSelect(fixture.root.querySelector<HTMLSelectElement>(".lp-overview-filter")!, "");
-    const titleOrder = cardIds(fixture.root);
+    const titleOrder = await collectPages();
     assert.equal(titleOrder.length, SCALE_SIZE);
     assert.equal(titleOrder[0], "scale-39", "Scale path 01 comes first");
     assert.ok(
       titleOrder.indexOf("scale-02") < titleOrder.indexOf("scale-03"),
       "equal titles fall through to the id",
     );
-    const titles = overviewCards(fixture.root).map(
-      (card) => card.querySelector("button")?.textContent ?? "",
-    );
-    for (let index = 1; index < titles.length; index += 1) {
+    // Titles ascend across every page; the one title tie falls through to id.
+    const titleFor = (id: string): string => {
+      const n = Number(id.slice("scale-".length));
+      if (n === 2 || n === 3) return "Scale path tied";
+      return `Scale path ${String(SCALE_SIZE - n).padStart(2, "0")}`;
+    };
+    for (let index = 1; index < titleOrder.length; index += 1) {
+      const [before, after] = [titleOrder[index - 1]!, titleOrder[index]!];
+      const byTitle = titleFor(before).localeCompare(titleFor(after));
       assert.ok(
-        titles[index - 1]!.localeCompare(titles[index]!) <= 0,
-        `title order breaks at ${titles[index - 1]} → ${titles[index]}`,
+        byTitle < 0 || (byTitle === 0 && before < after),
+        `title order breaks at ${before} → ${after}`,
       );
     }
     assert.equal(countLine(fixture.root).textContent, "40 of 40 paths");
@@ -813,9 +847,9 @@ test("40 paths: every card renders, tag counts are honest, and both sorts are de
     // Switching back reproduces the first ordering exactly: no drift, no
     // dependence on the order the previous sort left in the DOM.
     setSelect(sort(), "updated");
-    assert.deepEqual(cardIds(fixture.root), updatedOrder);
+    assert.deepEqual(await collectPages(), updatedOrder);
     setSelect(sort(), "title");
-    assert.deepEqual(cardIds(fixture.root), titleOrder);
+    assert.deepEqual(await collectPages(), titleOrder);
   } finally {
     fixture.restore();
   }

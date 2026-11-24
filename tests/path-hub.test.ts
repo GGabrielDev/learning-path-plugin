@@ -626,6 +626,15 @@ test("the detailed view floats: it never squeezes the graph, and Close deselects
     assert.equal(pane.hidden, true, "closing deselects and hides the floating window");
     assert.ok(!fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId);
     assert.equal(graphCard(fixture.root, "n-holistic").getAttribute("aria-pressed"), "false");
+
+    // The live app refreshes in the background (notifications, resync). A
+    // closed detailed view must stay closed instead of silently reselecting.
+    fixture.emit("paths-changed", { id: path.id });
+    await fixture.flush();
+    fixture.resync();
+    await fixture.flush();
+    assert.equal(pane.hidden, true, "a background refresh never reopens the closed window");
+    assert.ok(!fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId);
     assert.equal(
       body.querySelectorAll(":scope > *").length,
       2,
