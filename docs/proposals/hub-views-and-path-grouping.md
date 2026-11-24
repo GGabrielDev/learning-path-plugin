@@ -1,7 +1,10 @@
 # Path Hub views and path grouping (research + brainstorm)
 
-Status: brainstorm on `exp/path-hub-views`, branched from `experimental`.
-Nothing here is implemented yet; every section ends in a decision to make.
+Status: implemented on `exp/path-hub-views` (three commits: domain tags +
+`paths.updateMeta`, the Paths overview dashboard, the module-lane
+roadmap). The open decisions below are resolved as marked. The README
+workflow/test-table updates are pending, separate from in-flight README
+edits on the branch.
 
 ## The question
 
@@ -154,15 +157,21 @@ Where each piece would land, so the effort is estimable:
   tree pane host, one toggle button in the header; the `expanded` map and
   `renderTree` dispatch becomes `renderPathView(mode)`.
 
-## Open decisions
+## Decisions, as implemented
 
-1. Dashboard-first or roadmap-first? My read: **tags + overview cards first** —
-   it is pure addition (no new view mode, no risk to the existing tree) and
-   answers the scaling problem; the roadmap lane view is the more experimental
-   half and can land behind a header toggle.
-2. Do tags belong in `Settings → Learning Paths` too (bulk edit), or only at
-   the overview? Probably overview only; settings already has a lot.
-3. Should the distribution strip use color alone? No — keep the existing
-   label-with-counts convention (`PROGRESSION_LABELS`) next to it.
-4. Lane view for a 1-module path: collapse to a single row of cards, or hide
-   the toggle? Probably hide the toggle when `modules.length < 2`.
+1. **Both surfaces landed**, tags + overview first, then the roadmap. The
+   header select stays beside the cards: it is the compact quick-switch, the
+   overview is the dashboard; both drive one selection path.
+2. Tags live only at the overview (Edit tags per card) — Settings already
+   carries enough, and bulk edits invite treating tags as structure rather
+   than filing.
+3. The distribution strip always ships a labeled count line
+   (`PROGRESSION_LABELS` text plus an `aria-label` on the strip), so color
+   never stands alone.
+4. A 1-module path hides the toggle entirely (mounted but hidden, so the
+   widget state stays consistent); a held `roadmap` mode falls back to the
+   tree if a path drops below two modules.
+5. One extra rule surfaced during implementation: a held tag filter survives a
+   path losing its last instance of that tag — the option stays listed, and
+   the grid says "No paths carry this tag" instead of silently dropping the
+   filter.
