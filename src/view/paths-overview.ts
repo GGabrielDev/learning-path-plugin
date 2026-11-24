@@ -93,6 +93,8 @@ function pathMatchesSearch(summary: PathSummary, query: string): boolean {
   return [summary.title, summary.goal, ...summary.tags].some((text) =>
     text.toLowerCase().includes(needle),
   );
+}
+
 /** Sentinel for the picker's `Unfiled` option. A validated folder can never
  * contain a control character, so it cannot collide with a real folder. */
 const UNFILED_FOLDER = "\u0000unfiled";
@@ -178,6 +180,8 @@ function parseFolderEntry(raw: string): { folder: string | null; error: string |
     }
   }
   return { folder, error: null };
+}
+
 /** The only orderings the overview offers. Neither implies priority: there is
  * no "smart" order and no notion of a path being stale. */
 type SortKey = "updated" | "title";
@@ -645,7 +649,6 @@ export function createPathsOverview(
 
     const tags = distinctTags(summaries);
     const counts = tagCounts(summaries);
-    const controls = element(document, "div", "lp-overview-controls");
 
     // A held filter survives a path losing its last instance of the tag: the
     // option stays listed so the empty result can be cleared, never hidden.
@@ -680,6 +683,25 @@ export function createPathsOverview(
       field.append(filterSelect);
       controls.append(field);
     }
+    const sortField = element(document, "label", "lp-path-field");
+    sortField.append(element(document, "span", "lp-field-label", "Sort"));
+    const sortSelect = element(document, "select", "lp-select lp-overview-sort");
+    sortSelect.setAttribute("aria-label", "Sort paths");
+    for (const candidate of SORT_OPTIONS) {
+      const option = element(document, "option", undefined, candidate.label);
+      option.value = candidate.value;
+      if (candidate.value === sortKey) option.selected = true;
+      sortSelect.append(option);
+    }
+    sortSelect.addEventListener("change", () => {
+      if (disposed || signal.aborted) return;
+      const chosen = SORT_OPTIONS.find((candidate) => candidate.value === selectedValue(sortSelect));
+      if (!chosen) return;
+      sortKey = chosen.value;
+      renderResults(selectedPathId);
+    });
+    sortField.append(sortSelect);
+    controls.append(sortField);
     if (controls.childElementCount > 0) root.append(controls);
 
     countHost = element(document, "p", "lp-muted lp-overview-count");

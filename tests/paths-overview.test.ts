@@ -736,7 +736,7 @@ test("40 paths: every card renders, tag counts are honest, and both sorts are de
     assert.equal(cards.length, SCALE_SIZE);
     assert.equal(new Set(cardIds(fixture.root)).size, SCALE_SIZE);
     assert.ok(cards.every((card) => !card.hidden), "every path card is visible");
-    assert.equal(countLine(fixture.root).textContent, "40 paths");
+    assert.equal(countLine(fixture.root).textContent, "40 of 40 paths");
 
     const overviewText = fixture.root.querySelector<HTMLElement>(".lp-overview")!.textContent ?? "";
     assert.doesNotMatch(overviewText, /load more|show more|next page|page \d|pagination/i);
@@ -808,7 +808,7 @@ test("40 paths: every card renders, tag counts are honest, and both sorts are de
         `title order breaks at ${titles[index - 1]} → ${titles[index]}`,
       );
     }
-    assert.equal(countLine(fixture.root).textContent, "40 paths");
+    assert.equal(countLine(fixture.root).textContent, "40 of 40 paths");
 
     // Switching back reproduces the first ordering exactly: no drift, no
     // dependence on the order the previous sort left in the DOM.
