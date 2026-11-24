@@ -401,9 +401,31 @@
   gap: 12px;
 }
 
+.lp-overview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 10px 12px;
+}
+
+.lp-overview-search {
+  flex: 1 1 16rem;
+  max-width: 22rem;
+}
+
+.lp-search-input {
+  min-width: 0;
+}
+
 .lp-overview-filter {
   align-self: flex-end;
   max-width: 18rem;
+}
+
+.lp-overview-count {
+  margin: 0;
+  font-size: 0.8rem;
 }
 
 .lp-overview-cards {

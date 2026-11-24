@@ -4,7 +4,8 @@
  * node-state distribution strip that always carries labels and counts (color
  * never stands alone), pending pivots and unresolved watchpoints. Learner-owned
  * grouping tags file a path under an exam, field or project; a tag filter
- * groups cards client-side, and tag edits go through `paths.updateMeta`.
+ * groups cards client-side, a search box narrows them by title, goal or tag,
+ * and tag edits go through `paths.updateMeta`.
  *
  * There is deliberately no scheduling surface here: no dates, hours, streaks
  * or completion percentages. The Architect has no tool that writes tags, so
@@ -74,6 +75,17 @@ function tagMatches(tag: string, filter: string | null): boolean {
   return filter === null || tag.toLowerCase() === filter.toLowerCase();
 }
 
+/** Case-insensitive substring over the summary's title, goal and tags. An
+ * empty or whitespace-only query matches every path, so clearing the box is
+ * the same as never having searched. */
+function pathMatchesSearch(summary: PathSummary, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return true;
+  return [summary.title, summary.goal, ...summary.tags].some((text) =>
+    text.toLowerCase().includes(needle),
+  );
+}
+
 /** Parse and locally validate a comma-separated tag entry. Returns precise
  * learner-readable errors; the backend re-validates with the same domain rules. */
 function parseTagEntry(raw: string): { tags: readonly string[]; error: string | null } {
@@ -111,21 +123,30 @@ export function createPathsOverview(
   root.setAttribute("aria-label", "Paths overview");
   container.append(root);
 
-  let handles: PluginWidgetHandle<unknown>[] = [];
+  let cardHandles: PluginWidgetHandle<unknown>[] = [];
   let disposed = false;
   let filterTag: string | null = null;
+  let searchQuery = "";
   let latestSummaries: readonly PathSummary[] = [];
+  let cardsHost: HTMLElement | null = null;
+  let countHost: HTMLElement | null = null;
+
+  const clearCards = (): void => {
+    for (const handle of cardHandles.reverse()) handle.dispose();
+    cardHandles = [];
+  };
 
   const clear = (): void => {
-    for (const handle of handles.reverse()) handle.dispose();
-    handles = [];
+    clearCards();
+    cardsHost = null;
+    countHost = null;
     root.replaceChildren();
   };
 
   const badge = (parent: HTMLElement, text: string, color: string): void => {
     const host = element(document, "span", "lp-badge-host");
     parent.append(host);
-    handles.push(ctx.ui.mountBadge(host, { text, color }, { signal }));
+    cardHandles.push(ctx.ui.mountBadge(host, { text, color }, { signal }));
   };
 
   const button = (
@@ -136,7 +157,7 @@ export function createPathsOverview(
   ): void => {
     const host = element(document, "span", "lp-button-host");
     parent.append(host);
-    handles.push(
+    cardHandles.push(
       ctx.ui.mountButton(
         host,
         {
@@ -330,12 +351,68 @@ export function createPathsOverview(
     cards.append(cardRoot);
   }
 
+  /** One sentence that names what to clear, so an empty result is a state the
+   * learner can leave rather than a dead grid. */
+  function emptyMessage(): string {
+    const term = searchQuery.trim();
+    if (term !== "") {
+      const also = filterTag === null ? "" : " and the group filter";
+      return `No paths match "${term}". Clear the search${also} to see them all.`;
+    }
+    if (filterTag !== null) {
+      return "No paths carry this tag. Clear the group filter to see them all.";
+    }
+    return "No paths match.";
+  }
+
+  /** Rebuild only the results region, so typing keeps focus and caret. */
+  function renderResults(selectedPathId: string | null): void {
+    const cards = cardsHost;
+    const count = countHost;
+    if (disposed || signal.aborted || !cards || !count) return;
+    clearCards();
+    cards.replaceChildren();
+
+    const visible = latestSummaries.filter(
+      (summary) =>
+        (filterTag === null || summary.tags.some((tag) => tagMatches(tag, filterTag))) &&
+        pathMatchesSearch(summary, searchQuery),
+    );
+    count.textContent = `${visible.length} of ${latestSummaries.length} paths`;
+    if (visible.length === 0 && latestSummaries.length > 0) {
+      cards.append(element(document, "p", "lp-empty-state", emptyMessage()));
+      return;
+    }
+    for (const summary of visible) {
+      card(summary, summary.id === selectedPathId);
+    }
+  }
+
   function render(summaries: readonly PathSummary[], selectedPathId: string | null): void {
     if (disposed || signal.aborted) return;
     latestSummaries = summaries;
     clear();
 
     root.append(element(document, "h2", "lp-pane-title", "Paths overview"));
+
+    const controls = element(document, "div", "lp-overview-controls");
+    // The box exists exactly when there is something to search.
+    if (summaries.length > 0) {
+      const field = element(document, "label", "lp-path-field lp-overview-search");
+      field.append(element(document, "span", "lp-field-label", "Search"));
+      const input = element(document, "input", "lp-input lp-search-input");
+      input.setAttribute("type", "text");
+      input.setAttribute("aria-label", "Search paths");
+      input.setAttribute("placeholder", "Title, goal or tag");
+      input.value = searchQuery;
+      input.addEventListener("input", () => {
+        if (disposed || signal.aborted) return;
+        searchQuery = input.value;
+        renderResults(selectedPathId);
+      });
+      field.append(input);
+      controls.append(field);
+    }
 
     const tags = distinctTags(summaries);
     // A held filter survives a path losing its last instance of the tag: the
@@ -365,25 +442,20 @@ export function createPathsOverview(
         if (disposed || signal.aborted) return;
         const value = selectedValue(filterSelect);
         filterTag = value === "" ? null : value;
-        render(latestSummaries, selectedPathId);
+        renderResults(selectedPathId);
       });
       field.append(filterSelect);
-      root.append(field);
+      controls.append(field);
     }
+    if (controls.childElementCount > 0) root.append(controls);
 
-    const cards = element(document, "div", "lp-overview-cards");
-    root.append(cards);
-    const visible = summaries.filter(
-      (summary) => filterTag === null || summary.tags.some((tag) => tagMatches(tag, filterTag)),
-    );
-    if (visible.length === 0 && summaries.length > 0) {
-      cards.append(
-        element(document, "p", "lp-empty-state", "No paths carry this tag. Clear the group filter to see them all."),
-      );
-    }
-    for (const summary of visible) {
-      card(summary, summary.id === selectedPathId);
-    }
+    countHost = element(document, "p", "lp-muted lp-overview-count");
+    countHost.setAttribute("aria-live", "polite");
+    root.append(countHost);
+
+    cardsHost = element(document, "div", "lp-overview-cards");
+    root.append(cardsHost);
+    renderResults(selectedPathId);
   }
 
   return {

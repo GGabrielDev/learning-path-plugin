@@ -39,6 +39,27 @@ function overviewCards(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(".lp-path-card")];
 }
 
+function visibleIds(root: HTMLElement): (string | null)[] {
+  return overviewCards(root).map((card) => card.getAttribute("data-path-id"));
+}
+
+function countText(root: HTMLElement): string {
+  return root.querySelector<HTMLElement>(".lp-overview-count")?.textContent ?? "";
+}
+
+/** The results region's empty state, never the hub's "No learning paths yet". */
+function resultsEmptyState(root: HTMLElement): HTMLElement | null {
+  return root.querySelector<HTMLElement>(".lp-overview-cards .lp-empty-state");
+}
+
+function typeSearch(root: HTMLElement, value: string): HTMLInputElement {
+  const input = root.querySelector<HTMLInputElement>(".lp-search-input");
+  assert.ok(input, "the Paths overview renders a search box when paths exist");
+  input.value = value;
+  fire(input, "input");
+  return input;
+}
+
 function cardButton(fixture: ReturnType<typeof createViewFixture>, pathId: string, label: string) {
   const card = fixture.root.querySelector<HTMLElement>(`.lp-path-card[data-path-id="${pathId}"]`);
   assert.ok(card, `Missing card for ${pathId}`);
@@ -98,6 +119,11 @@ test("an empty hub keeps a single empty state and hides the overview", async () 
     assert.equal(pane.hidden, true, "no dashboard over zero paths");
     assert.match(fixture.root.textContent ?? "", /No learning paths yet/);
     assert.equal(overviewCards(fixture.root).length, 0);
+    assert.equal(
+      fixture.root.querySelector(".lp-search-input"),
+      null,
+      "no search box without paths to search",
+    );
   } finally {
     fixture.restore();
   }
@@ -198,6 +224,147 @@ test("the tag filter groups cards client-side without refetching", async () => {
     setSelect(filter, "");
     visible = overviewCards(fixture.root).map((card) => card.getAttribute("data-path-id"));
     assert.deepEqual(visible.sort(), ["path-exam", "path-field", "path-plain"]);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("the search box narrows cards by title, goal and tag, case-insensitively", async () => {
+  const fixture = createViewFixture({
+    paths: [
+      makePath(),
+      makeTaggedPath("path-exam", ["exam:step-2"]),
+      makeTaggedPath("path-field", ["field:systems"]),
+    ],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+    const input = fixture.root.querySelector<HTMLInputElement>(".lp-search-input");
+    assert.ok(input, "the search box mounts whenever paths exist");
+    assert.equal(input.getAttribute("aria-label"), "Search paths");
+    assert.equal(countText(fixture.root), "3 of 3 paths");
+
+    const listCallsBefore = fixture.calls.filter((call) => call.name === "paths.list").length;
+
+    typeSearch(fixture.root, "LINEAR");
+    assert.deepEqual(visibleIds(fixture.root), ["path-linear-algebra"], "a title substring narrows");
+    assert.equal(countText(fixture.root), "1 of 3 paths");
+
+    typeSearch(fixture.root, "durable LINEAR-ALGEBRA");
+    assert.deepEqual(
+      visibleIds(fixture.root),
+      ["path-linear-algebra"],
+      "goal text matches without regard to case",
+    );
+
+    typeSearch(fixture.root, "STEP-2");
+    assert.deepEqual(visibleIds(fixture.root), ["path-exam"], "tags match without regard to case");
+
+    typeSearch(fixture.root, "field:SYSTEMS");
+    assert.deepEqual(visibleIds(fixture.root), ["path-field"]);
+
+    assert.equal(
+      fixture.calls.filter((call) => call.name === "paths.list").length,
+      listCallsBefore,
+      "searching is a client-side filter, not another fetch",
+    );
+
+    typeSearch(fixture.root, "no-such-path");
+    assert.deepEqual(visibleIds(fixture.root), [], "never an empty grid");
+    assert.equal(countText(fixture.root), "0 of 3 paths", "the count stays honest at zero");
+    const empty = resultsEmptyState(fixture.root);
+    assert.ok(empty, "an empty result names its state instead of an empty grid");
+    assert.match(empty.textContent ?? "", /No paths match/);
+    assert.match(empty.textContent ?? "", /no-such-path/, "the empty state names the search term");
+    assert.match(empty.textContent ?? "", /Clear the search/);
+
+    typeSearch(fixture.root, "");
+    assert.deepEqual(visibleIds(fixture.root).sort(), [
+      "path-exam",
+      "path-field",
+      "path-linear-algebra",
+    ]);
+    assert.equal(countText(fixture.root), "3 of 3 paths");
+    // Compare with === : assert.equal on a linkedom node hangs formatting the diff.
+    assert.ok(resultsEmptyState(fixture.root) === null, "clearing the search removes the empty state");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("search composes with a held tag filter under AND semantics", async () => {
+  const fixture = createViewFixture({
+    paths: [
+      makeTaggedPath("path-exam", ["exam:step-2"]),
+      makeTaggedPath("path-field", ["field:systems"]),
+      makeTaggedPath("path-plain", []),
+    ],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+    const filter = fixture.root.querySelector<HTMLSelectElement>(".lp-overview-filter")!;
+    setSelect(filter, "exam:step-2");
+    assert.deepEqual(visibleIds(fixture.root), ["path-exam"]);
+    assert.equal(countText(fixture.root), "1 of 3 paths");
+
+    typeSearch(fixture.root, "field");
+    assert.deepEqual(
+      visibleIds(fixture.root),
+      [],
+      "a search hit outside the held tag group does not leak through",
+    );
+    assert.equal(countText(fixture.root), "0 of 3 paths");
+    const empty = resultsEmptyState(fixture.root);
+    assert.ok(empty, "the composed filter shows an empty state, not an empty grid");
+    assert.match(empty.textContent ?? "", /No paths match/);
+    assert.match(empty.textContent ?? "", /field/, "the empty state names the search term");
+    assert.match(
+      empty.textContent ?? "",
+      /Clear the search and the group filter/,
+      "the empty state says how to get back to every path",
+    );
+
+    typeSearch(fixture.root, "exam");
+    assert.deepEqual(
+      visibleIds(fixture.root),
+      ["path-exam"],
+      "only the intersection of search and tag group shows",
+    );
+    assert.equal(countText(fixture.root), "1 of 3 paths");
+
+    typeSearch(fixture.root, "");
+    assert.deepEqual(visibleIds(fixture.root), ["path-exam"], "clearing the search keeps the held filter");
+    assert.equal(countText(fixture.root), "1 of 3 paths");
+
+    setSelect(filter, "");
+    assert.deepEqual(visibleIds(fixture.root).sort(), ["path-exam", "path-field", "path-plain"]);
+    assert.equal(countText(fixture.root), "3 of 3 paths");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("the search text survives a refetch and keeps narrowing", async () => {
+  const fixture = createViewFixture({
+    paths: [
+      makeTaggedPath("path-exam", ["exam:step-2"]),
+      makeTaggedPath("path-field", ["field:systems"]),
+    ],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+    typeSearch(fixture.root, "exam");
+    assert.deepEqual(visibleIds(fixture.root), ["path-exam"]);
+
+    fixture.emit("paths-changed", { id: "path-exam" });
+    await fixture.flush();
+    const input = fixture.root.querySelector<HTMLInputElement>(".lp-search-input")!;
+    assert.equal(input.value, "exam", "a refetch re-renders the box with the held query");
+    assert.deepEqual(visibleIds(fixture.root), ["path-exam"]);
+    assert.equal(countText(fixture.root), "1 of 2 paths");
   } finally {
     fixture.restore();
   }
