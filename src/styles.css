@@ -423,9 +423,15 @@
   max-width: 18rem;
 }
 
+.lp-overview-sort {
+  align-self: flex-end;
+  max-width: 14rem;
+}
+
 .lp-overview-count {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: 0.85rem;
+  color: var(--muted-foreground, var(--foreground));
 }
 
 .lp-overview-cards {
