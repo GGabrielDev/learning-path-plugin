@@ -6,12 +6,21 @@
  * grouping tags file a path under an exam, field or project; a tag filter
  * groups cards client-side, and tag edits go through `paths.updateMeta`.
  *
+ * Each path also has one folder home (`exam/step-2`); a folder picker shows the
+ * hierarchy with subtree counts, and cards can be filtered by folder as well as
+ * by tag. Folder edits ride the same `paths.updateMeta` dialog.
+ *
  * There is deliberately no scheduling surface here: no dates, hours, streaks
- * or completion percentages. The Architect has no tool that writes tags, so
- * how a path is filed never drifts from what it teaches.
+ * or completion percentages. The Architect has no tool that writes tags or
+ * folders, so how a path is filed never drifts from what it teaches.
  */
 import type { PluginFrontendContext, PluginWidgetHandle } from "learnharness-plugin-api";
-import { MAX_PATH_TAGS, MAX_PATH_TAG_LENGTH } from "../domain.ts";
+import {
+  MAX_PATH_FOLDER_SEGMENTS,
+  MAX_PATH_FOLDER_SEGMENT_LENGTH,
+  MAX_PATH_TAGS,
+  MAX_PATH_TAG_LENGTH,
+} from "../domain.ts";
 import type { PathSummary } from "./path-hub.ts";
 
 export interface PathsOverviewOptions {
@@ -74,6 +83,93 @@ function tagMatches(tag: string, filter: string | null): boolean {
   return filter === null || tag.toLowerCase() === filter.toLowerCase();
 }
 
+/** Sentinel for the picker's `Unfiled` option. A validated folder can never
+ * contain a control character, so it cannot collide with a real folder. */
+const UNFILED_FOLDER = "\u0000unfiled";
+
+interface FolderOption {
+  readonly path: string;
+  /** 0 for a top-level folder; children indent under their parent. */
+  readonly depth: number;
+  /** Paths filed in this folder or any of its subfolders. */
+  readonly count: number;
+}
+
+/** Every folder (and its ancestors) across paths, as a depth-first hierarchy;
+ * ancestor counts include their subtrees so picking a parent is never empty. */
+function distinctFolders(summaries: readonly PathSummary[]): readonly FolderOption[] {
+  const counts = new Map<string, number>();
+  const roots = new Set<string>();
+  const children = new Map<string, Set<string>>();
+  for (const summary of summaries) {
+    if (summary.folder === null) continue;
+    const segments = summary.folder.split("/");
+    let prefix = "";
+    for (const [index, segment] of segments.entries()) {
+      const parent = prefix;
+      prefix = index === 0 ? segment : `${prefix}/${segment}`;
+      counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
+      if (index === 0) {
+        roots.add(prefix);
+      } else {
+        const siblings = children.get(parent) ?? new Set<string>();
+        siblings.add(prefix);
+        children.set(parent, siblings);
+      }
+    }
+  }
+  const options: FolderOption[] = [];
+  const walk = (nodes: Iterable<string>, depth: number): void => {
+    const sorted = [...nodes].sort((a, b) => folderLabel(a).localeCompare(folderLabel(b)));
+    for (const node of sorted) {
+      options.push({ path: node, depth, count: counts.get(node) ?? 0 });
+      const nested = children.get(node);
+      if (nested) walk(nested, depth + 1);
+    }
+  };
+  walk(roots, 0);
+  return options;
+}
+
+function folderLabel(folder: string): string {
+  return folder.split("/").at(-1) ?? folder;
+}
+
+/** Choosing a folder shows its subtree; `Unfiled` means absence, not a folder. */
+function folderMatches(folder: string | null, filter: string): boolean {
+  if (filter === UNFILED_FOLDER) return folder === null;
+  return folder !== null && (folder === filter || folder.startsWith(`${filter}/`));
+}
+
+/** Parse and locally validate one folder entry. Returns a precise, learner-readable
+ * error; the backend re-validates with the same domain rules. */
+function parseFolderEntry(raw: string): { folder: string | null; error: string | null } {
+  const folder = raw.trim();
+  if (folder.length === 0) return { folder: null, error: null };
+  const levels = folder.split("/");
+  if (levels.length > MAX_PATH_FOLDER_SEGMENTS) {
+    return { folder: null, error: `A folder has at most ${MAX_PATH_FOLDER_SEGMENTS} levels.` };
+  }
+  for (const [index, level] of levels.entries()) {
+    if (level.length === 0) {
+      return {
+        folder: null,
+        error: `Folder level ${index + 1} is empty — check for a leading, trailing or doubled "/".`,
+      };
+    }
+    if (level.length > MAX_PATH_FOLDER_SEGMENT_LENGTH) {
+      return {
+        folder: null,
+        error: `Folder level ${index + 1} is at most ${MAX_PATH_FOLDER_SEGMENT_LENGTH} characters.`,
+      };
+    }
+    if (level !== level.trim()) {
+      return { folder: null, error: `Folder level ${index + 1} must not start or end with a space.` };
+    }
+  }
+  return { folder, error: null };
+}
+
 /** Parse and locally validate a comma-separated tag entry. Returns precise
  * learner-readable errors; the backend re-validates with the same domain rules. */
 function parseTagEntry(raw: string): { tags: readonly string[]; error: string | null } {
@@ -114,6 +210,8 @@ export function createPathsOverview(
   let handles: PluginWidgetHandle<unknown>[] = [];
   let disposed = false;
   let filterTag: string | null = null;
+  /** "" means all paths, `UNFILED_FOLDER` means unfiled, else a folder subtree. */
+  let filterFolder = "";
   let latestSummaries: readonly PathSummary[] = [];
 
   const clear = (): void => {
@@ -174,7 +272,7 @@ export function createPathsOverview(
               doc,
               "p",
               "lp-muted",
-              "Group this path by an exam, field or project. Comma-separated; tags are filing, never scheduling.",
+              "Group this path with tags and give it one folder home. Tags are cross-cutting; the folder is where the path lives. Filing only, never scheduling.",
             ),
           );
           const field = element(doc, "label", "lp-field");
@@ -186,6 +284,17 @@ export function createPathsOverview(
           input.value = summary.tags.join(", ");
           field.append(input);
           dialogRoot.append(field);
+
+          const folderField = element(doc, "label", "lp-field");
+          folderField.append(element(doc, "span", "lp-field-label", "Folder"));
+          const folderInput = doc.createElement("input");
+          folderInput.className = "lp-input lp-folder-input";
+          folderInput.setAttribute("type", "text");
+          folderInput.setAttribute("aria-label", "Folder, e.g. exam/step-2");
+          folderInput.setAttribute("placeholder", "e.g. exam/step-2 — leave empty for unfiled");
+          folderInput.value = summary.folder ?? "";
+          folderField.append(folderInput);
+          dialogRoot.append(folderField);
           const status = element(doc, "p", "lp-dialog-status");
           status.setAttribute("role", "status");
           const error = element(doc, "p", "lp-dialog-error");
@@ -201,18 +310,29 @@ export function createPathsOverview(
 
           const saveTags = async (): Promise<void> => {
             if (contentSignal.aborted || signal.aborted || saving) return;
-            const parsed = parseTagEntry(input.value);
-            if (parsed.error !== null) {
+            const parsedTags = parseTagEntry(input.value);
+            const parsedFolder = parseFolderEntry(folderInput.value);
+            const invalid = parsedTags.error ?? parsedFolder.error;
+            if (invalid !== null) {
               status.textContent = "";
-              error.textContent = parsed.error;
+              error.textContent = invalid;
               error.hidden = false;
               return;
             }
             saving = true;
             try {
-              await ctx.call("paths.updateMeta", { pathId: summary.id, tags: parsed.tags });
+              // Folder is only sent when it changed; omitted leaves it alone, so
+              // the dialog works against backends that predate the field.
+              const update: { pathId: string; tags: readonly string[]; folder?: string | null } = {
+                pathId: summary.id,
+                tags: parsedTags.tags,
+              };
+              if ((parsedFolder.folder ?? "") !== (summary.folder ?? "")) {
+                update.folder = parsedFolder.folder;
+              }
+              await ctx.call("paths.updateMeta", update);
               if (contentSignal.aborted || signal.aborted) return;
-              status.textContent = "Tags saved.";
+              status.textContent = "Filing saved.";
               options.tagsChanged();
               close();
             } catch (problem) {
@@ -257,7 +377,10 @@ export function createPathsOverview(
     const cardRoot = element(document, "article", "lp-path-card");
     cardRoot.setAttribute("data-path-id", summary.id);
     if (selected) cardRoot.classList.add("lp-path-card-selected");
-    if (summary.tags.some((tag) => tagMatches(tag, filterTag))) {
+    if (
+      summary.tags.some((tag) => tagMatches(tag, filterTag)) &&
+      (filterFolder === "" || folderMatches(summary.folder, filterFolder))
+    ) {
       cardRoot.classList.add("lp-path-card-filtered-in");
     }
 
@@ -319,6 +442,10 @@ export function createPathsOverview(
       cardRoot.append(badges);
     }
 
+    if (summary.folder !== null) {
+      cardRoot.append(element(document, "p", "lp-muted lp-path-card-folder", `Folder: ${summary.folder}`));
+    }
+
     if (summary.tags.length > 0) {
       const row = element(document, "div", "lp-tag-row");
       for (const tag of summary.tags) {
@@ -336,6 +463,50 @@ export function createPathsOverview(
     clear();
 
     root.append(element(document, "h2", "lp-pane-title", "Paths overview"));
+
+    const folderOptions = distinctFolders(summaries);
+    // A held folder filter survives the last path leaving it: keep the option
+    // listed so the empty result can be cleared, never silently fall back.
+    const heldFolder =
+      filterFolder === "" ||
+      filterFolder === UNFILED_FOLDER ||
+      folderOptions.some((option) => option.path === filterFolder)
+        ? null
+        : filterFolder;
+    const unfiledCount = summaries.filter((summary) => summary.folder === null).length;
+    const folderField = element(document, "label", "lp-path-field");
+    folderField.append(element(document, "span", "lp-field-label", "Folder"));
+    const folderSelect = element(document, "select", "lp-select lp-overview-folder");
+    folderSelect.setAttribute("aria-label", "Filter paths by folder");
+    const allFolders = element(document, "option", undefined, `All paths (${summaries.length})`);
+    allFolders.value = "";
+    folderSelect.append(allFolders);
+    const unfiled = element(document, "option", undefined, `Unfiled (${unfiledCount})`);
+    unfiled.value = UNFILED_FOLDER;
+    folderSelect.append(unfiled);
+    const addFolderOption = (path: string, depth: number, count: number): void => {
+      const option = element(
+        document,
+        "option",
+        undefined,
+        `${"\u00a0".repeat(depth * 3)}${folderLabel(path)} (${count})`,
+      );
+      option.value = path;
+      folderSelect.append(option);
+    };
+    for (const option of folderOptions) addFolderOption(option.path, option.depth, option.count);
+    if (heldFolder !== null) addFolderOption(heldFolder, 0, 0);
+    if (filterFolder !== "") {
+      const option = [...folderSelect.options].find((candidate) => candidate.value === filterFolder);
+      if (option) option.selected = true;
+    }
+    folderSelect.addEventListener("change", () => {
+      if (disposed || signal.aborted) return;
+      filterFolder = selectedValue(folderSelect);
+      render(latestSummaries, selectedPathId);
+    });
+    folderField.append(folderSelect);
+    root.append(folderField);
 
     const tags = distinctTags(summaries);
     // A held filter survives a path losing its last instance of the tag: the
@@ -374,12 +545,18 @@ export function createPathsOverview(
     const cards = element(document, "div", "lp-overview-cards");
     root.append(cards);
     const visible = summaries.filter(
-      (summary) => filterTag === null || summary.tags.some((tag) => tagMatches(tag, filterTag)),
+      (summary) =>
+        (filterTag === null || summary.tags.some((tag) => tagMatches(tag, filterTag))) &&
+        (filterFolder === "" || folderMatches(summary.folder, filterFolder)),
     );
     if (visible.length === 0 && summaries.length > 0) {
-      cards.append(
-        element(document, "p", "lp-empty-state", "No paths carry this tag. Clear the group filter to see them all."),
-      );
+      const message =
+        filterFolder !== "" && filterTag !== null
+          ? "No paths match both the folder and tag filters. Clear one to see them all."
+          : filterFolder !== ""
+            ? "No paths are filed in this folder. Clear the folder filter to see them all."
+            : "No paths carry this tag. Clear the group filter to see them all.";
+      cards.append(element(document, "p", "lp-empty-state", message));
     }
     for (const summary of visible) {
       card(summary, summary.id === selectedPathId);

@@ -27,6 +27,10 @@ function makeTaggedPath(id: string, tags: readonly string[]): LearningPath {
   };
 }
 
+function makeFiledPath(id: string, folder: string, tags: readonly string[] = []): LearningPath {
+  return { ...makeTaggedPath(id, tags), folder };
+}
+
 async function mounted(fixture: ReturnType<typeof createViewFixture>): Promise<HTMLElement> {
   const container = fixture.root;
   fixture.context.signal.addEventListener("abort", () => container.replaceChildren());
@@ -302,6 +306,176 @@ test("Edit tags shows precise inline errors and never saves invalid filing", asy
     );
     assert.equal(dialog.disposed, 0, "the dialog stays open for a correction");
     assert.deepEqual(fixture.paths.get("path-one")!.tags, ["field:systems"], "the record is untouched");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("the folder picker shows one hierarchy with subtree counts and filters cards", async () => {
+  const fixture = createViewFixture({
+    paths: [
+      makeFiledPath("path-exam-a", "exam/step-2", ["math"]),
+      makeFiledPath("path-exam-b", "exam/step-2", ["physics"]),
+      makeFiledPath("path-field", "field/systems", ["math"]),
+      makeTaggedPath("path-plain", []),
+    ],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+    const picker = () => fixture.root.querySelector<HTMLSelectElement>(".lp-overview-folder")!;
+    const select = picker();
+    assert.ok(select, "the folder picker always renders");
+    const values = [...select.options].map((option) => option.value);
+    const unfiled = values.find((value) => value.startsWith("\u0000"))!;
+    assert.deepEqual(
+      values.filter((value) => value !== "" && value !== unfiled),
+      ["exam", "exam/step-2", "field", "field/systems"],
+      "nested folders list as one depth-first hierarchy",
+    );
+    const labelFor = (needle: string) =>
+      [...select.options].find((option) => (option.textContent ?? "").includes(needle))!;
+    assert.match(labelFor("All paths").textContent ?? "", /All paths \(4\)/);
+    assert.match(labelFor("Unfiled").textContent ?? "", /Unfiled \(1\)/);
+    assert.match(labelFor("exam").textContent ?? "", /exam \(2\)/);
+    assert.match(labelFor("step-2").textContent ?? "", /step-2 \(2\)/);
+    assert.match(labelFor("systems").textContent ?? "", /systems \(1\)/);
+
+    const cardIds = () => overviewCards(fixture.root).map((card) => card.dataset.pathId).sort();
+    assert.match(
+      fixture.root.querySelector<HTMLElement>('.lp-path-card[data-path-id="path-exam-a"]')!.textContent ?? "",
+      /Folder: exam\/step-2/,
+      "a card shows where it is filed",
+    );
+
+    const before = fixture.calls.filter((call) => call.name === "paths.list").length;
+    setSelect(picker(), "exam");
+    assert.deepEqual(cardIds(), ["path-exam-a", "path-exam-b"], "a parent folder includes its subtree");
+    setSelect(picker(), "exam/step-2");
+    assert.deepEqual(cardIds(), ["path-exam-a", "path-exam-b"]);
+    setSelect(picker(), "field");
+    assert.deepEqual(cardIds(), ["path-field"]);
+    setSelect(picker(), unfiled);
+    assert.deepEqual(cardIds(), ["path-plain"], "unfiled paths stay reachable under Unfiled");
+    setSelect(picker(), "");
+    assert.deepEqual(cardIds(), ["path-exam-a", "path-exam-b", "path-field", "path-plain"]);
+    assert.equal(
+      fixture.calls.filter((call) => call.name === "paths.list").length,
+      before,
+      "folder filtering is client-side, not another fetch",
+    );
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("the folder filter composes with the tag group filter", async () => {
+  const fixture = createViewFixture({
+    paths: [
+      makeFiledPath("path-exam-math", "exam/step-2", ["math"]),
+      makeFiledPath("path-exam-physics", "exam/step-2", ["physics"]),
+      makeFiledPath("path-field-math", "field/systems", ["math"]),
+    ],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+    const picker = () => fixture.root.querySelector<HTMLSelectElement>(".lp-overview-folder")!;
+    const tagPicker = () => fixture.root.querySelector<HTMLSelectElement>(".lp-overview-filter")!;
+    setSelect(picker(), "exam");
+    setSelect(tagPicker(), "math");
+    assert.deepEqual(
+      overviewCards(fixture.root).map((card) => card.dataset.pathId),
+      ["path-exam-math"],
+      "cards must satisfy both the folder and the tag filter",
+    );
+    setSelect(tagPicker(), "physics");
+    assert.deepEqual(overviewCards(fixture.root).map((card) => card.dataset.pathId), ["path-exam-physics"]);
+    setSelect(picker(), "field");
+    assert.equal(overviewCards(fixture.root).length, 0);
+    assert.match(fixture.root.textContent ?? "", /No paths match both the folder and tag filters/);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("Edit tags files a path into a folder with precise inline errors and clears it", async () => {
+  const fixture = createViewFixture({
+    paths: [makePath()],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+    await cardButton(fixture, "path-linear-algebra", "Edit tags").props.onClick();
+    await fixture.flush();
+
+    const dialog = fixture.find("openDialog");
+    const folderInput = dialog.contentContainer!.querySelector<HTMLInputElement>(".lp-folder-input")!;
+    const tagsInput = dialog.contentContainer!.querySelector<HTMLInputElement>(".lp-tags-input")!;
+    const error = dialog.contentContainer!.querySelector<HTMLElement>(".lp-dialog-error")!;
+    const save = () =>
+      fixture
+        .all("mountButton")
+        .find((record) => dialog.contentContainer!.contains(record.container) && record.props.label === "Save tags")!;
+    assert.equal(folderInput.value, "", "an unfiled path opens with an empty folder");
+    tagsInput.value = "field:systems";
+
+    folderInput.value = "exam//step-2";
+    await save().props.onClick();
+    await fixture.flush();
+    assert.match(error.textContent ?? "", /Folder level 2 is empty/);
+
+    folderInput.value = "x".repeat(41);
+    await save().props.onClick();
+    await fixture.flush();
+    assert.match(error.textContent ?? "", /Folder level 1 is at most 40 characters/);
+
+    assert.equal(
+      fixture.calls.filter((call) => call.name === "paths.updateMeta").length,
+      0,
+      "invalid folders never reach the backend",
+    );
+    assert.equal(dialog.disposed, 0, "the dialog stays open for a correction");
+
+    folderInput.value = "exam/step-2";
+    await save().props.onClick();
+    await fixture.flush();
+    await fixture.flush();
+    assert.deepEqual(fixture.calls.filter((call) => call.name === "paths.updateMeta").at(-1)?.input, {
+      pathId: "path-linear-algebra",
+      tags: ["field:systems"],
+      folder: "exam/step-2",
+    });
+    assert.equal(fixture.paths.get("path-linear-algebra")!.folder, "exam/step-2");
+    assert.match(
+      fixture.root.querySelector<HTMLElement>('.lp-path-card[data-path-id="path-linear-algebra"]')!.textContent ?? "",
+      /Folder: exam\/step-2/,
+    );
+    assert.equal(dialog.disposed >= 1, true, "a successful save closes the dialog");
+
+    // Clearing the field unfiles the path and the card drops its folder line.
+    await cardButton(fixture, "path-linear-algebra", "Edit tags").props.onClick();
+    await fixture.flush();
+    const reopened = fixture.find("openDialog");
+    const reopenedFolder = reopened.contentContainer!.querySelector<HTMLInputElement>(".lp-folder-input")!;
+    assert.equal(reopenedFolder.value, "exam/step-2");
+    reopenedFolder.value = "";
+    const saveReopened = fixture
+      .all("mountButton")
+      .find((record) => reopened.contentContainer!.contains(record.container) && record.props.label === "Save tags")!;
+    await saveReopened.props.onClick();
+    await fixture.flush();
+    await fixture.flush();
+    assert.deepEqual(fixture.calls.filter((call) => call.name === "paths.updateMeta").at(-1)?.input, {
+      pathId: "path-linear-algebra",
+      tags: ["field:systems"],
+      folder: null,
+    });
+    assert.equal(fixture.paths.get("path-linear-algebra")!.folder, undefined);
+    assert.doesNotMatch(
+      fixture.root.querySelector<HTMLElement>('.lp-path-card[data-path-id="path-linear-algebra"]')!.textContent ?? "",
+      /Folder:/,
+    );
   } finally {
     fixture.restore();
   }
