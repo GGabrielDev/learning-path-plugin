@@ -1,6 +1,6 @@
 /** Roadmap lane view tests.
  *
- * Mounted through the real Path Hub: the tree ↔ roadmap toggle appears only
+ * Mounted through the real Path Hub: the graph ↔ roadmap toggle appears only
  * for multi-module paths, lanes render only recorded structure (no arrows,
  * dates or order pressure), cards select nodes into the same inspector, and
  * everything disposes with the hub. No browser or model request.
@@ -33,7 +33,7 @@ async function mounted(fixture: ReturnType<typeof createViewFixture>): Promise<H
 function roadmapButton(fixture: ReturnType<typeof createViewFixture>) {
   const record = fixture
     .all("mountButton")
-    .find((entry) => entry.props.label === "Roadmap view" || entry.props.label === "Tree view");
+    .find((entry) => entry.props.label === "Roadmap view" || entry.props.label === "Graph view");
   assert.ok(record, "the view toggle is mounted");
   return record;
 }
@@ -91,9 +91,10 @@ test("the roadmap renders module lanes and node cards from recorded structure on
     await roadmapButton(fixture).props.onClick();
     await fixture.flush();
 
-    assert.equal(fixture.all("mountTree").length, 0, "the tree widget is released in roadmap mode");
+    assert.equal(fixture.all("mountTree").length, 0, "no tree widget is ever mounted");
+    assert.equal(fixture.root.querySelectorAll(".lp-graph-card").length, 0, "the graph is released in roadmap mode");
     assert.match(
-      fixture.root.querySelector<HTMLElement>(".lp-tree-pane .lp-pane-title")!.textContent ?? "",
+      fixture.root.querySelector<HTMLElement>(".lp-path-pane .lp-pane-title")!.textContent ?? "",
       /Path roadmap/,
     );
 
@@ -151,7 +152,7 @@ test("a card click selects the node into the shared inspector and marks the card
   }
 });
 
-test("toggles return to the tree and re-render without leaking the roadmap DOM", async () => {
+test("toggles return to the graph and re-render without leaking the roadmap DOM", async () => {
   const fixture = createViewFixture({
     paths: [makePath()],
     conversations: [snapshot("chat-architect")],
@@ -164,16 +165,16 @@ test("toggles return to the tree and re-render without leaking the roadmap DOM",
 
     const back = fixture
       .all("mountButton")
-      .find((entry) => entry.props.label === "Tree view")!;
+      .find((entry) => entry.props.label === "Graph view")!;
     assert.equal(back.props.variant, "secondary", "the active mode reads as on");
     await back.props.onClick();
     await fixture.flush();
 
-    const tree = fixture.find("mountTree");
-    assert.equal(tree.props.label, "Path hierarchy");
+    assert.equal(fixture.all("mountTree").length, 0, "the graph lens never mounts a tree widget");
+    assert.equal(fixture.root.querySelectorAll(".lp-graph-card").length, 6);
     assert.match(
-      fixture.root.querySelector<HTMLElement>(".lp-tree-pane .lp-pane-title")!.textContent ?? "",
-      /Path tree/,
+      fixture.root.querySelector<HTMLElement>(".lp-path-pane .lp-pane-title")!.textContent ?? "",
+      /Path graph/,
     );
     assert.equal(fixture.root.querySelector(".lp-roadmap"), null, "the roadmap DOM is removed");
     assert.equal(fixture.root.querySelectorAll(".lp-roadmap-card").length, 0);

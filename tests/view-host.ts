@@ -927,6 +927,20 @@ export function fire(element: HTMLElement, type: string): void {
   element.dispatchEvent(event);
 }
 
+/** The graph card for one node: the path pane's real `<button>`. */
+export function graphCard(root: HTMLElement, nodeId: string): HTMLElement {
+  const card = root.querySelector<HTMLElement>(`.lp-graph-card[data-node-id="${nodeId}"]`);
+  assert.ok(card, `Missing graph card ${nodeId}`);
+  return card;
+}
+
+/** Click a graph card, the learner's route into the shared inspector. */
+export function selectGraphNode(root: HTMLElement, nodeId: string): HTMLElement {
+  const card = graphCard(root, nodeId);
+  fire(card, "click");
+  return card;
+}
+
 export function setSelect(select: HTMLSelectElement, value: string): void {
   // linkedom exposes select.value as a getter only; select the option instead.
   const option = select.querySelector<HTMLOptionElement>(`option[value="${value}"]`);
