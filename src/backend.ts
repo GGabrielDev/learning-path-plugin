@@ -31,7 +31,10 @@ import type { ArchitectRegistration } from "./architect-agent.ts";
 import {
   ARTIFACT_TYPES,
   CHILD_SESSION_KINDS,
+  DomainValidationError,
   PROGRESSION_STATES,
+  MAX_PATH_TAGS,
+  parsePathTag,
   parsePluginSettings,
 } from "./domain.ts";
 import type {
@@ -92,6 +95,14 @@ interface PathSummary {
   readonly moduleCount: number;
   readonly nodeCount: number;
   readonly sourceMode: LearningPath["sourceSpine"]["mode"];
+  /** Spine titles for the overview card; canonical references or uploads. */
+  readonly sourceTitles: readonly string[];
+  /** Ungated node-state inventory: honest counts, never a completion target. */
+  readonly nodeStates: Readonly<Record<PathNode["progression"], number>>;
+  readonly pendingPivotCount: number;
+  readonly unresolvedErrorCount: number;
+  /** Learner-owned grouping tags; absent on old paths reads as none. */
+  readonly tags: readonly string[];
   readonly architectChatId?: string | null;
 }
 
@@ -152,6 +163,33 @@ function readPivotAction(value: unknown): PivotAction {
   return value;
 }
 
+/** Learner grouping tags, validated with the domain's own rules so the store
+ * and the RPC surface cannot disagree. Empty means "no tags" (the key is
+ * dropped from the record), matching absent-on-old-paths. */
+function readTagsInput(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) throw new Error("tags must be an array.");
+  if (value.length > MAX_PATH_TAGS) {
+    throw new Error(`tags accepts at most ${MAX_PATH_TAGS} entries.`);
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    let tag: string;
+    try {
+      tag = parsePathTag(entry, `tags[${index}]`);
+    } catch (error) {
+      if (error instanceof DomainValidationError) {
+        throw new Error(error.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "));
+      }
+      throw error;
+    }
+    if (seen.has(tag.toLowerCase())) {
+      throw new Error(`tags[${index}]: duplicate tag "${tag}".`);
+    }
+    seen.add(tag.toLowerCase());
+    return tag;
+  });
+}
+
 /** Uploaded source ids a path references, so deletion can remove only orphans. */
 function sourceIdsForPath(path: LearningPath): readonly string[] {
   const ids = new Set<string>();
@@ -179,14 +217,37 @@ function findNodeById(path: LearningPath, nodeId: string): PathNode | null {
 }
 
 function summarize(path: LearningPath): PathSummary {
+  const nodes = path.modules.flatMap((module) => module.nodes);
+  const nodeStates: Record<PathNode["progression"], number> = {
+    unstarted: 0,
+    in_progress: 0,
+    consolidated: 0,
+  };
+  let pendingPivotCount = 0;
+  let unresolvedErrorCount = 0;
+  for (const node of nodes) {
+    nodeStates[node.progression] += 1;
+    pendingPivotCount += node.pivotSuggestions.filter((pivot) => pivot.status === "pending").length;
+    unresolvedErrorCount += node.errors.filter((error) => !error.resolved).length;
+  }
+  const spine = path.sourceSpine;
+  const sourceTitles =
+    spine.mode === "canonical"
+      ? spine.references.map((reference) => reference.title)
+      : spine.sources.map((source) => source.name);
   return {
     id: path.id,
     title: path.title,
     goal: path.goal,
     updatedAt: path.updatedAt,
     moduleCount: path.modules.length,
-    nodeCount: path.modules.reduce((total, module) => total + module.nodes.length, 0),
-    sourceMode: path.sourceSpine.mode,
+    nodeCount: nodes.length,
+    sourceMode: spine.mode,
+    sourceTitles,
+    nodeStates,
+    pendingPivotCount,
+    unresolvedErrorCount,
+    tags: path.tags ?? [],
     architectChatId: path.architectChatId ?? null,
   };
 }
@@ -586,6 +647,30 @@ export function activate(ctx: PluginBackendContext): void {
     emit(EVENT_PATHS_CHANGED, {
       id: saved.id,
       nodeId,
+      updatedAt: saved.updatedAt,
+    });
+    return { path: saved };
+  });
+
+  // ---- Learner grouping metadata ------------------------------------------
+
+  // Tags are learner-owned filing (an exam, a field, a project). The Architect
+  // has no tool that writes them, and grouping stays topical, never temporal.
+  handle("paths.updateMeta", (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "paths.updateMeta");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    const tags = readTagsInput(value.tags);
+    const path = store.path(pathId);
+    if (!path) throw new Error(`Unknown path: ${pathId}`);
+    const { tags: _previous, ...withoutTags } = path;
+    const saved = store.savePath({
+      ...withoutTags,
+      updatedAt: new Date().toISOString(),
+      ...(tags.length === 0 ? {} : { tags }),
+    });
+    emit(EVENT_PATHS_CHANGED, {
+      id: saved.id,
       updatedAt: saved.updatedAt,
     });
     return { path: saved };

@@ -1,19 +1,19 @@
 /** Path Hub frontend tests.
  *
  * Public-API test double only: the real view is mounted against a recorded host
- * UI and an in-memory JSON backend. These tests prove disposal, tree rendering
+ * UI and an in-memory JSON backend. These tests prove disposal, graph rendering
  * and navigation, Architect chat state, document-conversion failures and
  * `onResync` recovery without a browser or a model request.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { PluginAgentSnapshot, PluginTreeRow } from "learnharness-plugin-api";
+import type { PluginAgentSnapshot } from "learnharness-plugin-api";
 import { mountPathHub } from "../src/view/path-hub.ts";
 import { effectiveArtifact } from "../src/view/node-inspector.ts";
 import { ARTIFACT_CATALOG } from "../src/domain.ts";
 import type { LearningPath } from "../src/domain.ts";
 import { makePath } from "./fixtures.ts";
-import { createViewFixture, fire, makeConversation, setSelect } from "./view-host.ts";
+import { createViewFixture, fire, graphCard, makeConversation, selectGraphNode, setSelect } from "./view-host.ts";
 import type { MountRecord, ViewFixture } from "./view-host.ts";
 
 function assistant(text: string): PluginAgentSnapshot["messages"][number] {
@@ -31,22 +31,8 @@ function snapshot(id: string, overrides: Partial<PluginAgentSnapshot> = {}): Plu
   return makeConversation(id, overrides);
 }
 
-function allRows(tree: MountRecord): PluginTreeRow[] {
-  const rows: PluginTreeRow[] = [];
-  const visit = (entries: readonly PluginTreeRow[]) => {
-    for (const row of entries) {
-      rows.push(row);
-      if (row.children) visit(row.children);
-    }
-  };
-  visit(tree.props.rows as readonly PluginTreeRow[]);
-  return rows;
-}
-
-function row(tree: MountRecord, key: string): PluginTreeRow {
-  const found = allRows(tree).find((entry) => entry.key === key);
-  assert.ok(found, `Missing tree row ${key}; have ${allRows(tree).map((entry) => entry.key).join(", ")}`);
-  return found;
+function liveButtons(fixture: ViewFixture): MountRecord[] {
+  return fixture.all("mountButton");
 }
 
 async function mounted(fixture: ViewFixture): Promise<HTMLElement> {
@@ -57,11 +43,14 @@ async function mounted(fixture: ViewFixture): Promise<HTMLElement> {
   return container;
 }
 
-function liveButtons(fixture: ViewFixture): MountRecord[] {
-  return fixture.all("mountButton");
+/** The recorded interleave edges, in the direction the graph draws them. */
+function drawnEdges(root: HTMLElement): string[] {
+  return [...root.querySelectorAll(".lp-graph-edge")].map(
+    (edge) => `${edge.getAttribute("data-edge-from")}->${edge.getAttribute("data-edge-to")}`,
+  );
 }
 
-test("Path Hub mounts every surface and disposes widgets, tree content and listeners on unmount", async () => {
+test("Path Hub mounts every surface and disposes widgets, graph cards and listeners on unmount", async () => {
   const path = makePath();
   const fixture = createViewFixture({
     paths: [path],
@@ -70,17 +59,39 @@ test("Path Hub mounts every surface and disposes widgets, tree content and liste
   try {
     const container = await mounted(fixture);
 
-    const tree = fixture.find("mountTree");
-    assert.equal(tree.props.label, "Path hierarchy");
-    assert.equal(tree.props.header, "Path");
-    assert.deepEqual(tree.props.columns, [{ key: "state", header: "State", width: 136 }]);
-    assert.equal(tree.signal, fixture.context.signal);
+    assert.equal(fixture.all("mountTree").length, 0, "the host tree widget is gone from the Path Hub");
+    assert.equal(
+      container.querySelector<HTMLElement>(".lp-path-pane .lp-pane-title")!.textContent,
+      "Path graph",
+      "the default lens is a graph, not a tree",
+    );
+    const clusters = container.querySelectorAll<HTMLElement>(".lp-graph-cluster");
+    assert.equal(clusters.length, 2, "makePath()'s two modules are clusters");
+    const cards = container.querySelectorAll<HTMLElement>(".lp-graph-card");
+    assert.equal(cards.length, 6, "every node is a card");
+    assert.ok(
+      [...cards].every((card) => card.tagName === "BUTTON" && card.getAttribute("type") === "button"),
+      "cards are real, keyboard-focusable buttons",
+    );
+    assert.deepEqual(
+      drawnEdges(container).sort(),
+      [
+        "n-concept->n-contrast",
+        "n-concept->n-skill",
+        "n-contrast->n-checkpoint",
+        "n-holistic->n-checkpoint",
+        "n-holistic->n-concept",
+        "n-skill->n-bridge",
+        "n-skill->n-contrast",
+      ],
+      "exactly the recorded interleavesNodeIds edges are drawn",
+    );
     assert.equal(fixture.all("mountStandardComposer").length, 1);
     assert.equal(fixture.all("mountMarkdown").length, 1, "the stored Architect turn is rendered as Markdown");
     assert.ok(liveButtons(fixture).some((button) => button.props.label === "Create a Path"));
     assert.ok(liveButtons(fixture).some((button) => button.props.label === "Refine Path"));
     assert.ok(liveButtons(fixture).some((button) => button.props.label === "Upload PDF or text"));
-    assert.ok(fixture.all("mountBadge").length >= 6, "node type and progression badges mount inside tree content");
+    assert.ok(fixture.all("mountBadge").length >= 12, "node type and progression badges mount inside the cards");
     assert.match(container.textContent ?? "", /1 of 6 nodes consolidated/);
 
     const callsBefore = fixture.calls.length;
@@ -91,7 +102,7 @@ test("Path Hub mounts every surface and disposes widgets, tree content and liste
     assert.ok(fixture.records.length > 0);
     assert.ok(
       fixture.records.every((record) => record.disposed >= 1),
-      "every ctx.ui handle, including tree content, is disposed exactly through its signal",
+      "every ctx.ui handle, including card badges, is disposed exactly through its signal",
     );
 
     fixture.emit("paths-changed", { id: path.id });
@@ -103,7 +114,7 @@ test("Path Hub mounts every surface and disposes widgets, tree content and liste
   }
 });
 
-test("tree renders modules, nodes and child chats with badges and preserves selection across updates", async () => {
+test("graph renders module clusters and node cards with badges and preserves selection across updates", async () => {
   const path = makePath();
   const fixture = createViewFixture({
     paths: [path],
@@ -111,30 +122,37 @@ test("tree renders modules, nodes and child chats with badges and preserves sele
   });
   try {
     await mounted(fixture);
-    const tree = fixture.find("mountTree");
+    const clusters = [...fixture.root.querySelectorAll<HTMLElement>(".lp-graph-cluster")];
     assert.deepEqual(
-      allRows(tree).map((entry) => entry.key),
-      [
-        "module:module-structure",
-        "node:n-holistic",
-        "node:n-concept",
-        "chat:n-concept:chat-1",
-        "node:n-skill",
-        "module:module-synthesis",
-        "node:n-contrast",
-        "node:n-checkpoint",
-        "node:n-bridge",
-      ],
+      clusters.map((cluster) => cluster.querySelector(".lp-graph-cluster-title")?.textContent),
+      ["Structure first", "Synthesis"],
     );
-    assert.equal(row(tree, "module:module-structure").content, "Structure first");
-    assert.equal(row(tree, "module:module-structure").cells?.state, "1/3 consolidated");
+    assert.match(clusters[0]!.textContent ?? "", /1\/3 consolidated/);
+    assert.match(clusters[1]!.textContent ?? "", /0\/3 consolidated/);
     assert.deepEqual(
-      fixture.all("mountBadge").slice(0, 6).map((badge) => badge.props.text),
+      [...fixture.root.querySelectorAll<HTMLElement>(".lp-graph-card")].map(
+        (card) => card.dataset.nodeId,
+      ),
+      ["n-holistic", "n-concept", "n-skill", "n-contrast", "n-checkpoint", "n-bridge"],
+    );
+    assert.match(
+      graphCard(fixture.root, "n-concept").textContent ?? "",
+      /1 teaching/,
+      "child chats are counted on the card where they are linked",
+    );
+    assert.deepEqual(
+      fixture
+        .all("mountBadge")
+        // Card badges mount into `lp-badge-row` hosts; overview and inspector
+        // badges use `lp-badge-host`, so this scopes the assertion.
+        .filter((badge) => badge.container.closest(".lp-graph-card") !== null)
+        .slice(0, 6)
+        .map((badge) => badge.props.text),
       ["Holistic", "Consolidated", "Concept", "In progress", "Skill", "Unstarted"],
     );
 
     const initialArchitectCalls = fixture.calls.filter((call) => call.name.startsWith("architect")).length;
-    await row(tree, "node:n-concept").selection!.onChange(true);
+    const conceptCard = selectGraphNode(fixture.root, "n-concept");
     await fixture.flush();
     const inspector = fixture.root.querySelector<HTMLElement>(".lp-inspector")!;
     assert.equal(inspector.dataset.nodeId, "n-concept");
@@ -148,32 +166,54 @@ test("tree renders modules, nodes and child chats with badges and preserves sele
       "micro_code",
     );
 
+    assert.equal(
+      graphCard(fixture.root, "n-concept").getAttribute("aria-pressed"),
+      "true",
+      "the selected card is marked",
+    );
+    assert.match(graphCard(fixture.root, "n-concept").className, /lp-graph-card-selected/);
+    assert.equal(
+      graphCard(fixture.root, "n-concept"),
+      conceptCard,
+      "selection repaints in place, so keyboard focus stays on the card",
+    );
+
     const interleaved = liveButtons(fixture).find((button) => button.props.label === "Node n-holistic");
     assert.ok(interleaved, "interleaved prior nodes are followable links");
     await interleaved.props.onClick();
     assert.equal(fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId, "n-holistic");
+    assert.equal(graphCard(fixture.root, "n-holistic").getAttribute("aria-pressed"), "true");
+    assert.equal(graphCard(fixture.root, "n-concept").getAttribute("aria-pressed"), "false");
 
-    await row(tree, "module:module-structure").disclosure!.onChange(false);
-    assert.equal(row(tree, "module:module-structure").disclosure!.expanded, false);
-    assert.equal(row(tree, "node:n-holistic").selection!.checked, true, "selection survives collapse/re-render");
+    // A path refresh rebuilds the cards; the selection belongs to the hub, not
+    // to the DOM, so it survives the re-render with the inspector intact.
+    fixture.emit("paths-changed", { id: path.id });
+    await fixture.flush();
+    assert.equal(
+      graphCard(fixture.root, "n-holistic").getAttribute("aria-pressed"),
+      "true",
+      "selection survives a graph re-render",
+    );
     assert.equal(
       fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId,
       "n-holistic",
-      "collapsing the tree never clears the inspector selection",
+      "re-rendering the graph never clears the inspector selection",
     );
-    await row(tree, "module:module-structure").disclosure!.onChange(true);
-    assert.equal(row(tree, "module:module-structure").disclosure!.expanded, true);
 
-    const chatButton = liveButtons(fixture).find(
-      (button) => button.props.label === "Open" && button.container.closest(".lp-tree-chat"),
-    );
-    assert.ok(chatButton, "child-chat rows expose a navigation action inside the tree");
-    await chatButton.props.onClick();
+    // Child chats stay openable from the inspector that the card selected into.
+    selectGraphNode(fixture.root, "n-concept");
+    await fixture.flush();
+    await liveButtons(fixture).find((button) => button.props.label === "Actions")!.props.onClick();
+    const menu = fixture.find("openMenu");
+    assert.equal(menu.props.label, "Session actions for First teaching chat");
+    const open = menu.props.items.find((item: { key: string }) => item.key === "open");
+    assert.ok(open, "a linked child chat exposes a navigation action in the inspector");
+    await open.onSelect();
     assert.deepEqual(fixture.openedSessions, ["chat-1"]);
     assert.equal(
       fixture.calls.filter((call) => call.name.startsWith("architect")).length,
       initialArchitectCalls,
-      "tree navigation and expansion never refetch or restart the Architect",
+      "graph navigation never refetches or restarts the Architect",
     );
   } finally {
     fixture.restore();
@@ -185,8 +225,7 @@ test("node inspector persists progression and artifact choices and refreshes bad
   const fixture = createViewFixture({ paths: [path], conversations: [snapshot("chat-architect")] });
   try {
     await mounted(fixture);
-    const tree = fixture.find("mountTree");
-    await row(tree, "node:n-concept").selection!.onChange(true);
+    selectGraphNode(fixture.root, "n-concept");
 
     const progression = fixture.root.querySelector<HTMLSelectElement>('select[aria-label="Progression"]')!;
     setSelect(progression, "consolidated");
@@ -197,12 +236,15 @@ test("node inspector persists progression and artifact choices and refreshes bad
       progression: "consolidated",
     });
     assert.match(fixture.root.textContent ?? "", /2 of 6 nodes consolidated · 1 in progress/);
-    const conceptRow = row(fixture.find("mountTree"), "node:n-concept");
-    assert.equal(conceptRow.cells?.state, "Consolidated");
     assert.ok(
       fixture
         .all("mountBadge")
-        .some((badge) => badge.props.text === "Consolidated" && badge.container.closest(".lp-tree-node")),
+        .some(
+          (badge) =>
+            badge.props.text === "Consolidated" &&
+            badge.container.closest(".lp-graph-card")?.getAttribute("aria-pressed") === "true",
+        ),
+      "the selected card's progression badge updates with the record",
     );
 
     const artifact = fixture.root.querySelector<HTMLSelectElement>('select[aria-label="Artifact type"]')!;
@@ -560,14 +602,18 @@ test("onResync re-reads paths and the Architect conversation after missed notifi
   }
 });
 
-test("an empty hub offers Create a Path and does not invent a tree or inspector node", async () => {
+test("an empty hub offers Create a Path and does not invent a graph or inspector node", async () => {
   const fixture = createViewFixture();
   try {
     await mounted(fixture);
     assert.equal(fixture.root.querySelector<HTMLElement>(".lp-architect-pane")!.hidden, false);
     assert.match(fixture.root.textContent ?? "", /No learning paths yet/);
     assert.match(fixture.root.querySelector<HTMLElement>(".lp-inspector")!.textContent ?? "", /Select a node/);
-    assert.equal(fixture.all("mountTree").length, 0, "no empty tree is mounted without a path");
+    assert.equal(
+      fixture.root.querySelectorAll(".lp-graph-card").length,
+      0,
+      "no empty graph is drawn without a path",
+    );
     const create = liveButtons(fixture).find((button) => button.props.label === "Create a Path")!;
     await create.props.onClick();
     await fixture.flush();

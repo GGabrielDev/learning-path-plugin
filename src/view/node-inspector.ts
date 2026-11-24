@@ -163,7 +163,7 @@ export function createNodeInspector(
       document,
       "p",
       "lp-muted",
-      "Select a node in the path tree to see its source anchor, pre-reading and artifact.",
+      "Select a node in the path graph to see its source anchor, pre-reading and artifact.",
     );
     root.append(heading, hint);
   };

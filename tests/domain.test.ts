@@ -179,6 +179,33 @@ test("a path needs modules, modules need nodes, and required fields are required
   assert.throws(() => parseLearningPath([makePath()]), /path: must be an object/);
 });
 
+test("learner grouping tags are optional, bounded, and validated as filing, not curriculum", () => {
+  const plain = parseLearningPath(makePath());
+  assert.equal("tags" in plain, false, "old paths read as untagged without migration");
+
+  const tagged = parseLearningPath({ ...makePath(), tags: ["exam:step-2", "Field:Systems"] });
+  assert.deepEqual(tagged.tags, ["exam:step-2", "Field:Systems"]);
+
+  const empty = parseLearningPath({ ...makePath(), tags: [] });
+  assert.deepEqual(empty.tags, []);
+
+  assert.throws(() => parseLearningPath({ ...makePath(), tags: "exam" }), /tags: must be an array/);
+  assert.throws(() => parseLearningPath({ ...makePath(), tags: [""] }), /tags\[0\]: must be at least 1 character/);
+  assert.throws(() => parseLearningPath({ ...makePath(), tags: [" spaced "] }), /must not have leading or trailing whitespace/);
+  assert.throws(
+    () => parseLearningPath({ ...makePath(), tags: ["x".repeat(41)] }),
+    /tags\[0\]: must be at most 40 characters/,
+  );
+  assert.throws(
+    () => parseLearningPath({ ...makePath(), tags: ["field:systems", "Field:Systems"] }),
+    /tags\[1\]: duplicate tag/,
+  );
+  assert.throws(
+    () => parseLearningPath({ ...makePath(), tags: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] }),
+    /tags: a path carries at most 8 tags/,
+  );
+});
+
 test("unknown keys are dropped, so only validated data reaches the store", () => {
   const value = rawPath();
   value.modules[0].nodes[0].schedule = "Monday";

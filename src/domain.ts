@@ -38,6 +38,16 @@ export type PivotProposalType = (typeof PIVOT_PROPOSAL_TYPES)[number];
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevelName = (typeof THINKING_LEVELS)[number];
 
+/** Learner-owned grouping metadata (an exam, a field, a project). Grouping is
+ * topical, never temporal: no scheduling semantics may attach to a tag. */
+export const MAX_PATH_TAGS = 8;
+export const MAX_PATH_TAG_LENGTH = 40;
+
+/** Validate one learner tag inside a `LearningPath.tags` array. */
+export function parsePathTag(value: unknown, path: string): string {
+  return readString(value, path, { max: MAX_PATH_TAG_LENGTH });
+}
+
 export const ARTIFACT_TYPES = [
   "micro_code",
   "relational_map",
@@ -234,6 +244,9 @@ export interface LearningPath {
   readonly modules: readonly PathModule[];
   /** Path-level artifact preference; per-node overrides win. */
   readonly artifactDefault?: ArtifactType | null;
+  /** Learner-owned grouping tags, e.g. `exam:step-2` or `field:systems`.
+   * The Architect never writes them; they are filing, not curriculum. */
+  readonly tags?: readonly string[];
   /** Architect conversation that created/refines this path. */
   readonly architectChatId?: string | null;
 }
@@ -621,6 +634,25 @@ function readPathModule(value: unknown, path: string): PathModule {
   };
 }
 
+function readPathTags(value: unknown, path: string): readonly string[] {
+  const entries = readArray(value, path);
+  if (entries.length > MAX_PATH_TAGS) {
+    fail(path, `a path carries at most ${MAX_PATH_TAGS} tags`);
+  }
+  const seen = new Set<string>();
+  return entries.map((entry, index) => {
+    const tag = parsePathTag(entry, `${path}[${index}]`);
+    const key = tag.toLowerCase();
+    // Tags dedupe case-insensitively so `Field:Systems` and `field:systems`
+    // cannot split one group.
+    if (seen.has(key)) {
+      fail(`${path}[${index}]`, `duplicate tag "${tag}"`);
+    }
+    seen.add(key);
+    return tag;
+  });
+}
+
 function readLearningPathValue(value: unknown): LearningPath {
   const path = "path";
   const record = readObject(value, path);
@@ -649,6 +681,7 @@ function readLearningPathValue(value: unknown): LearningPath {
     ...(record.architectChatId === undefined || record.architectChatId === null
       ? { architectChatId: record.architectChatId }
       : { architectChatId: readId(record.architectChatId, `${path}.architectChatId`) }),
+    ...(record.tags === undefined ? {} : { tags: readPathTags(record.tags, `${path}.tags`) }),
   };
   assertPathGraph(parsed);
   return parsed;
