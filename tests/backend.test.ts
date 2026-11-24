@@ -596,6 +596,11 @@ test("paths.list summarizes stored paths without loading tool state", async (t) 
       moduleCount: 2,
       nodeCount: 6,
       sourceMode: "canonical",
+      sourceTitles: ["OSTEP"],
+      nodeStates: { unstarted: 3, in_progress: 2, consolidated: 1 },
+      pendingPivotCount: 1,
+      unresolvedErrorCount: 1,
+      tags: [],
       architectChatId: "conversation-1",
     },
   ]);
@@ -659,6 +664,56 @@ test("paths.updateNode records progression and per-node artifacts without rewrit
     h.call("paths.updateNode", { pathId: "path-missing", nodeId: "n-concept", progression: "in_progress" }),
     /Unknown path/,
   );
+});
+
+test("paths.updateMeta stores learner grouping tags without touching the curriculum", async (t) => {
+  const h = host(t);
+  await createConversation(h);
+  await h.runTool("save_learning_path", rawPath());
+
+  const tagged = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: ["exam:step-2", "field:systems"],
+  });
+  assert.deepEqual(tagged.path.tags, ["exam:step-2", "field:systems"]);
+  assert.equal(tagged.path.architectChatId, "conversation-1");
+  assert.equal(tagged.path.createdAt, AT, "filing a path does not rewrite its identity");
+  assert.deepEqual(
+    tagged.path.modules[0].nodes[1].childSessions[0].chatId,
+    "chat-1",
+    "the curriculum is untouched by metadata",
+  );
+  assert.ok(
+    h.events.some((event) => event.topic === "paths-changed" && (event.data as any).id === "path-linear-algebra"),
+  );
+
+  const listed = await h.call<{ paths: any[] }>("paths.list");
+  assert.deepEqual(listed.paths[0].tags, ["exam:step-2", "field:systems"]);
+
+  const cleared = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: [],
+  });
+  assert.equal(cleared.path.tags, undefined, "clearing tags drops the key entirely");
+
+  const reloaded = await h.call<{ path: any }>("paths.get", { id: "path-linear-algebra" });
+  assert.equal(reloaded.path.tags, undefined, "the store round-trips the cleared record");
+
+  await assert.rejects(h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: "exam" }), /tags must be an array/);
+  await assert.rejects(h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [""] }), /must be at least 1 character/);
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: ["x".repeat(41)] }),
+    /must be at most 40 characters/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: ["field:systems", "Field:Systems"] }),
+    /duplicate tag/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] }),
+    /at most 8 entries/,
+  );
+  await assert.rejects(h.call("paths.updateMeta", { pathId: "path-missing", tags: [] }), /Unknown path/);
 });
 
 test("paths.export renders validated JSON and Markdown with download metadata", async (t) => {

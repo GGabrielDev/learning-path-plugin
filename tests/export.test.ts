@@ -58,6 +58,10 @@ test("Markdown export renders the full path without losing learner state", () =>
   assert.match(markdown, /- \*\*Updated:\*\* 2026-01-31T09:30:00\.000Z/);
   assert.match(markdown, /- \*\*Default artifact:\*\* Retrieval cue \/ flashcard seed/);
 
+  const tagged = exportLearningPathAsMarkdown({ ...path, tags: ["exam:step-2", "field:systems"] });
+  assert.match(tagged, /- \*\*Tags:\*\* exam:step-2, field:systems/);
+  assert.doesNotMatch(markdown, /\*\*Tags:/, "an untagged path exports no empty tags line");
+
   assert.match(markdown, /## Source Spine/);
   assert.match(markdown, /- \*\*Mode:\*\* Canonical references/);
   assert.match(markdown, /OSTEP — Arpaci-Dusseau — edition 1\.0 — textbook/);

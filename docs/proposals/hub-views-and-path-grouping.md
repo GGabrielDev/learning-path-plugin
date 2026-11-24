@@ -1,0 +1,168 @@
+# Path Hub views and path grouping (research + brainstorm)
+
+Status: brainstorm on `exp/path-hub-views`, branched from `experimental`.
+Nothing here is implemented yet; every section ends in a decision to make.
+
+## The question
+
+Today the Path Hub is a single surface: a path `<select>` in the header, one
+module → node → child-chat tree, the Architect pane and the Node Inspector.
+Two pressures motivate revisiting it:
+
+1. **Orientation within one path.** A deep tree answers "what is inside module
+   3?" but not "what is the shape of this path?" Modules, proactive
+   `holistic`/`contrast` structure and accepted bridges are the framework's
+   load-bearing ideas, and none of them is *visible* as structure in an outline.
+2. **Orientation across paths.** A `<select>` dropdown does not scale past a
+   handful of paths, and there is no way to organize paths by exam, field or
+   project — the learner's real reason for having several.
+
+## Hard constraints from the essence
+
+Any view must not smuggle back what the framework deliberately rejects
+(`FRAMEWORK.md`, README workflow section):
+
+| Principle | What it forbids in a UI |
+| --- | --- |
+| Ungated progression, zero scheduling | No dates, hours, streaks, "days left", daily goals, or a "you are behind" cue of any kind |
+| Advisory-only adaptation | No auto-rearranged layout; nothing moves, regroups or disappears without a learner action |
+| No invented curricula | The view renders only what the record asserts (modules, node types, anchors, watchpoints, pivots) — never drawn edges that look like prerequisites the Architect never wrote |
+| Generative artifacts with stated reasons | If a view recommends an artifact, it shows the "why" inline, as the inspector does today |
+| Misconceptions by root cause | Error surfacing stays qualitative ("3 unresolved: discrimination errors"), never a numeric grade or red "failing" state |
+| Source grounding | The source spine (canonical vs uploaded) stays visible at the overview level, since it is the path's claim to legitimacy |
+
+One existing tension to resolve honestly: the header already shows
+"X of Y nodes consolidated." That reads as inventory, not pressure — an
+honest count. Any dashboard should keep that register (counts, distributions)
+and avoid percentage rings, progress bars that imply completion targets, or
+"80% done!" framing.
+
+## Survey: how do curricula get presented elsewhere
+
+A synthesis of familiar products and general HCI guidance (Shneiderman's
+*overview first, zoom and filter, then details-on-demand* is the touchstone).
+Each is scored against the essence above.
+
+### Linear skill-path strips (Duolingo, Brilliant, Codecademy)
+
+One station after another, you cannot open station 5 before station 4. Best-in-
+class for momentum and reducing choice; built around streaks and daily goals.
+**Fit: poor.** Gating, scheduling pressure and implied order are precisely
+what principle 7 rejects, and interleaving (principle 5) breaks linearity by
+design. Worth borrowing only one thing: the calm of *large, few, obvious
+targets to tap*.
+
+### Roadmaps (roadmap.sh-style topical maps)
+
+Columns/lanes of a field, "deep" vs "shallow" markers, no time axis. Excellent
+for "where am I in this whole field" orientation. **Fit: mixed, depends on
+what the lanes mean.** If we render *modules as lanes* and nodes as cards, we
+draw only recorded structure — honest. If we let an auto-layout draw *edges*
+between nodes to suggest prerequisites, we invent a curriculum visually. The
+honest version is: **module swimlanes, node cards, no connecting arrows.**
+Bridges/contrasts/holistic cards get distinct color/badges so the proactive
+structure is finally *visible*.
+
+### Outlines/trees (current UI, docs apps, file browsers)
+
+Proven for ≤3 levels of hierarchy, cheap on host primitives (`ctx.ui.mountTree`),
+accessible, and already wired for selection → inspector. Weakness is exactly
+the two pressures above: no gestalt, and path switching is a dropdown.
+**Fit: good, keep as the detail/list mode.**
+
+### Kanban by progression (GitHub Projects / Trello style)
+
+Columns `unstarted → in_progress → consolidated`. **Fit: reject.** It converts
+epistemic states into a workflow to be pushed rightward — completion pressure
+by layout — and it strips nodes of their module context, which is where
+anchors and interleaving live.
+
+### Dashboards over many goals (Exercism track picker, GitHub Projects
+### with grouping)
+
+A home surface of cards, each card summarizing one effort, with grouping and
+filtering by learner-defined metadata. **Fit: good, with the register kept
+honest** (counts and distributions, not percentages/rings). This is the natural
+answer to "a list of paths, grouped by exam or field."
+
+### Graph/topology renderings
+
+Radial or force-directed node graphs. The irony: the framework *loves*
+relational maps — drawn by the learner as artifacts. An auto-generated graph of
+the path would be the machine doing the learner's generative work, plus it
+invents edges. **Fit: reject for path structure; keep relational maps as
+learner artifacts only** (they already surface via `artifactNote` in the
+inspector).
+
+## Brainstorm: the two-surface proposal
+
+### Surface 1 — Paths overview (dashboard, replaces the `<select>` as the hub landing)
+
+- Grid of path cards, each showing: title, goal (truncated), source spine mode
+  with the source titles, module/node counts, node-state *distribution strip*
+  (segmented bar: consolidated / in progress / unstarted, labeled with counts),
+  pending pivots and unresolved watchpoint counts as badges.
+- **Custom fields as tags.** A bounded free-form `tags: string[]` on the path
+  record (learner-managed, e.g. `exam:step-2`, `field:distributed-systems`,
+  `project:rag-eval`). Grouping is a client-side filter over tags; no tag
+  schema, no fixed "type" column — the learner decides what their dimensions
+  mean, which honors the plugin's refusal to model scheduling or external
+  goals. Validation mirrors `title` handling: max ~8 tags, ~40 chars each,
+  normalized on save; unknown keys already ignored on read, so old paths
+  simply have no tags.
+- Tag editing lives beside the path (a small menu on the card or in the
+  inspector), never in the Architect conversation: tags are learner metadata,
+  and keeping them out of the Architect's tool surface means no drift between
+  what the agent designed and how the learner files it.
+
+### Surface 2 — In-path view toggle: tree ↔ module-lane roadmap
+
+- Keep the tree (host primitive, tests, accessibility) as one mode.
+- Add a roadmap mode: each module is a horizontal lane; node cards show type
+  badge, progression badge, anchor, unresolved-error badge; no arrows, no
+  dates, no "up next" recommender. Checkpoints visually mark module ends;
+  accepted bridge nodes stand out as the repair history they are.
+- Selection behavior is identical in both modes (tap card → inspector), so the
+  inspector, Architect pane and session-launch flow are untouched.
+- A toggle is honest to "advisory-only": the learner chooses the view; nothing
+  about the path record changes.
+
+### Explicitly out of scope (for now)
+
+- Any "recommended next node" widget — even advisory, it reads as a schedule.
+- Percentage rings, streak-adjacent anything, due-anything.
+- Auto-drawn prerequisite edges or graph layouts.
+- Reordering nodes by drag-and-drop: the Architect is the only thing that
+  restructures a path, via drafts and accepted pivots.
+
+## Grounding in the code
+
+Where each piece would land, so the effort is estimable:
+
+- **Tags (data):** `LearningPath` gains optional `tags`; validation in
+  `src/domain.ts` beside `readString(record.title, ...)`; `paths.list`
+  summary (`src/backend.ts` `summarize`) gains `tags` so the dashboard never
+  loads full records; one new RPC `paths.updateMeta` (tags only, mirroring
+  `paths.updateNode`'s guard-and-rebuild pattern); export JSON/Markdown gain a
+  tags line (`src/export.ts`); store version stays 1 since absence is valid.
+- **Dashboard (view):** a new `src/view/paths-overview.ts` mounted above /
+  instead of the header select in `src/view/path-hub.ts`; reuses
+  `ctx.ui.mountBadge`, buttons and menus only; tests follow the existing
+  `path-hub*` pattern (linkedom mount + in-memory backend).
+- **Roadmap mode (view):** a lane renderer over the same `LearningPath`
+  payload the tree already consumes; DOM-built cards inside the existing
+  tree pane host, one toggle button in the header; the `expanded` map and
+  `renderTree` dispatch becomes `renderPathView(mode)`.
+
+## Open decisions
+
+1. Dashboard-first or roadmap-first? My read: **tags + overview cards first** —
+   it is pure addition (no new view mode, no risk to the existing tree) and
+   answers the scaling problem; the roadmap lane view is the more experimental
+   half and can land behind a header toggle.
+2. Do tags belong in `Settings → Learning Paths` too (bulk edit), or only at
+   the overview? Probably overview only; settings already has a lot.
+3. Should the distribution strip use color alone? No — keep the existing
+   label-with-counts convention (`PROGRESSION_LABELS`) next to it.
+4. Lane view for a 1-module path: collapse to a single row of cards, or hide
+   the toggle? Probably hide the toggle when `modules.length < 2`.

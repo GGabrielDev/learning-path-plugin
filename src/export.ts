@@ -197,6 +197,9 @@ export function exportLearningPathAsMarkdown(
       `- **Progress:** ${consolidated} of ${nodes.length} nodes consolidated · ${inProgress} in progress`,
       `- **Created:** ${parsed.createdAt}`,
       `- **Updated:** ${parsed.updatedAt}`,
+      ...(parsed.tags === undefined || parsed.tags.length === 0
+        ? []
+        : [`- **Tags:** ${parsed.tags.join(", ")}`]),
       ...(parsed.artifactDefault
         ? [`- **Default artifact:** ${artifactLabel(parsed.artifactDefault)}`]
         : []),
