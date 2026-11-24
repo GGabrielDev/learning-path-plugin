@@ -206,13 +206,13 @@ export function mountPathHub(
   const graphHost = element(document, "div", "lp-graph-host");
   const roadmapHost = element(document, "div", "lp-roadmap-host");
   roadmapHost.hidden = true;
-  const treeEmpty = element(
+  const pathEmpty = element(
     document,
     "p",
     "lp-empty-state",
     "No learning paths yet. Use Create a Path to talk to the Architect.",
   );
-  pathPane.append(graphHost, roadmapHost, treeEmpty);
+  pathPane.append(graphHost, roadmapHost, pathEmpty);
   const architectContainer = element(document, "div", "lp-architect-pane");
   const inspectorContainer = element(document, "div", "lp-inspector-pane");
   body.append(pathPane, architectContainer, inspectorContainer);
@@ -597,7 +597,7 @@ export function mountPathHub(
     const roadmap = viewMode === "roadmap" && path !== null && path.modules.length >= 2;
     paneTitle.textContent = roadmap ? "Path roadmap" : "Path graph";
     pathPane.setAttribute("aria-label", roadmap ? "Path roadmap" : "Path graph");
-    treeEmpty.hidden = path !== null;
+    pathEmpty.hidden = path !== null;
     graphHost.hidden = path === null || roadmap;
     roadmapHost.hidden = path === null || !roadmap;
     disposeCards();
