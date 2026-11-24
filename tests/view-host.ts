@@ -127,6 +127,7 @@ function summarize(path: LearningPath): PathSummary {
     pendingPivotCount: nodes.flatMap((node) => node.pivotSuggestions).filter((pivot) => pivot.status === "pending").length,
     unresolvedErrorCount: nodes.flatMap((node) => node.errors).filter((error) => !error.resolved).length,
     tags: path.tags ?? [],
+    folder: path.folder ?? null,
     architectChatId: path.architectChatId ?? null,
   };
 }
@@ -479,7 +480,17 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
         if (!Array.isArray(value.tags)) {
           return Promise.reject(new Error("tags must be an array."));
         }
-        const { tags: _previous, ...withoutTags } = found;
+        let folder = found.folder;
+        if (value.folder !== undefined) {
+          if (value.folder === null || value.folder === "") {
+            folder = undefined;
+          } else if (typeof value.folder !== "string") {
+            return Promise.reject(new Error("folder must be a string or null."));
+          } else {
+            folder = value.folder;
+          }
+        }
+        const { tags: _previous, folder: _previousFolder, ...withoutFiling } = found;
         const tags: string[] = value.tags.map(String);
         const seen = new Set<string>();
         for (const tag of tags) {
@@ -489,9 +500,10 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
           seen.add(tag.toLowerCase());
         }
         const updated: LearningPath = {
-          ...withoutTags,
+          ...withoutFiling,
           updatedAt: "2026-02-01T00:00:00.000Z",
           ...(tags.length === 0 ? {} : { tags }),
+          ...(folder === undefined ? {} : { folder }),
         };
         paths.set(updated.id, updated);
         return Promise.resolve({ path: structuredClone(updated) } as T);

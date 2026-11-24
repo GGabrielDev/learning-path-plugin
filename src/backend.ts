@@ -34,6 +34,7 @@ import {
   DomainValidationError,
   PROGRESSION_STATES,
   MAX_PATH_TAGS,
+  parsePathFolder,
   parsePathTag,
   parsePluginSettings,
 } from "./domain.ts";
@@ -103,6 +104,8 @@ interface PathSummary {
   readonly unresolvedErrorCount: number;
   /** Learner-owned grouping tags; absent on old paths reads as none. */
   readonly tags: readonly string[];
+  /** The path's one folder home, or null when unfiled. */
+  readonly folder: string | null;
   readonly architectChatId?: string | null;
 }
 
@@ -190,6 +193,23 @@ function readTagsInput(value: unknown): readonly string[] {
   });
 }
 
+/** Learner folder input. `undefined` leaves the current folder alone; `null`
+ * or an empty string clears it, mirroring how empty tags drop the key. */
+function readFolderInput(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") throw new Error("folder must be a string or null.");
+  if (value.trim().length === 0) return null;
+  try {
+    return parsePathFolder(value, "folder");
+  } catch (error) {
+    if (error instanceof DomainValidationError) {
+      throw new Error(error.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "));
+    }
+    throw error;
+  }
+}
+
 /** Uploaded source ids a path references, so deletion can remove only orphans. */
 function sourceIdsForPath(path: LearningPath): readonly string[] {
   const ids = new Set<string>();
@@ -248,6 +268,7 @@ function summarize(path: LearningPath): PathSummary {
     pendingPivotCount,
     unresolvedErrorCount,
     tags: path.tags ?? [],
+    folder: path.folder ?? null,
     architectChatId: path.architectChatId ?? null,
   };
 }
@@ -661,13 +682,16 @@ export function activate(ctx: PluginBackendContext): void {
     const value = object(input, "paths.updateMeta");
     const pathId = readText(value.pathId, "pathId", { max: 128 });
     const tags = readTagsInput(value.tags);
+    const folder = readFolderInput(value.folder);
     const path = store.path(pathId);
     if (!path) throw new Error(`Unknown path: ${pathId}`);
-    const { tags: _previous, ...withoutTags } = path;
+    const nextFolder = folder === undefined ? path.folder : (folder ?? undefined);
+    const { tags: _previous, folder: _previousFolder, ...withoutFiling } = path;
     const saved = store.savePath({
-      ...withoutTags,
+      ...withoutFiling,
       updatedAt: new Date().toISOString(),
       ...(tags.length === 0 ? {} : { tags }),
+      ...(nextFolder === undefined ? {} : { folder: nextFolder }),
     });
     emit(EVENT_PATHS_CHANGED, {
       id: saved.id,

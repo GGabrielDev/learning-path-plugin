@@ -62,6 +62,10 @@ test("Markdown export renders the full path without losing learner state", () =>
   assert.match(tagged, /- \*\*Tags:\*\* exam:step-2, field:systems/);
   assert.doesNotMatch(markdown, /\*\*Tags:/, "an untagged path exports no empty tags line");
 
+  const filed = exportLearningPathAsMarkdown({ ...path, folder: "exam/step-2" });
+  assert.match(filed, /- \*\*Folder:\*\* exam\/step-2/);
+  assert.doesNotMatch(markdown, /\*\*Folder:/, "an unfiled path exports no empty folder line");
+
   assert.match(markdown, /## Source Spine/);
   assert.match(markdown, /- \*\*Mode:\*\* Canonical references/);
   assert.match(markdown, /OSTEP — Arpaci-Dusseau — edition 1\.0 — textbook/);

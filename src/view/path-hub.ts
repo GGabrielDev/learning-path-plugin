@@ -68,6 +68,8 @@ export interface PathSummary {
   readonly unresolvedErrorCount: number;
   /** Learner-owned grouping tags; absent on old paths reads as none. */
   readonly tags: readonly string[];
+  /** The path's one folder home, or null when unfiled. */
+  readonly folder: string | null;
   readonly architectChatId?: string | null;
 }
 

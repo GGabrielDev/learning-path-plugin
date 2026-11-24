@@ -206,6 +206,44 @@ test("learner grouping tags are optional, bounded, and validated as filing, not 
   );
 });
 
+test("a learner folder is one optional bounded hierarchy; absence reads as unfiled", () => {
+  const plain = parseLearningPath(makePath());
+  assert.equal("folder" in plain, false, "old paths read as unfiled without migration");
+
+  const filed = parseLearningPath({ ...makePath(), folder: "exam/step-2" });
+  assert.equal(filed.folder, "exam/step-2");
+  const deep = parseLearningPath({
+    ...makePath(),
+    folder: Array.from({ length: 6 }, () => "x".repeat(40)).join("/"),
+  });
+  assert.equal(deep.folder?.split("/").length, 6, "six levels of forty characters are allowed");
+
+  assert.throws(() => parseLearningPath({ ...makePath(), folder: "" }), /folder: must be at least 1 character/);
+  assert.throws(() => parseLearningPath({ ...makePath(), folder: 3 }), /folder: must be a string/);
+  assert.throws(
+    () => parseLearningPath({ ...makePath(), folder: " exam/step-2" }),
+    /must not have leading or trailing whitespace/,
+  );
+  assert.throws(() => parseLearningPath({ ...makePath(), folder: "exam/" }), /folder \(level 2\): must not be empty/);
+  assert.throws(() => parseLearningPath({ ...makePath(), folder: "/exam" }), /folder \(level 1\): must not be empty/);
+  assert.throws(
+    () => parseLearningPath({ ...makePath(), folder: "exam//step-2" }),
+    /folder \(level 2\): must not be empty/,
+  );
+  assert.throws(
+    () => parseLearningPath({ ...makePath(), folder: "exam/ step-2" }),
+    /folder \(level 2\): must not have leading or trailing whitespace/,
+  );
+  assert.throws(
+    () => parseLearningPath({ ...makePath(), folder: "x".repeat(41) }),
+    /folder \(level 1\): must be at most 40 characters/,
+  );
+  assert.throws(
+    () => parseLearningPath({ ...makePath(), folder: "a/b/c/d/e/f/g" }),
+    /a folder has at most 6 levels/,
+  );
+});
+
 test("unknown keys are dropped, so only validated data reaches the store", () => {
   const value = rawPath();
   value.modules[0].nodes[0].schedule = "Monday";

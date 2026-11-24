@@ -48,6 +48,32 @@ export function parsePathTag(value: unknown, path: string): string {
   return readString(value, path, { max: MAX_PATH_TAG_LENGTH });
 }
 
+/** A path lives in exactly one folder hierarchy, e.g. `exam/step-2`. Folders
+ * are learner filing like tags (topical, never temporal); tags stay the
+ * cross-cutting dimension, while the folder is the path's primary home. */
+export const MAX_PATH_FOLDER_SEGMENTS = 6;
+export const MAX_PATH_FOLDER_SEGMENT_LENGTH = 40;
+
+/** Validate one learner folder: `a/b/c`, 1-6 non-empty levels of 1-40 chars. */
+export function parsePathFolder(value: unknown, path: string): string {
+  const folder = readString(value, path, {
+    max: MAX_PATH_FOLDER_SEGMENTS * (MAX_PATH_FOLDER_SEGMENT_LENGTH + 1),
+  });
+  const segments = folder.split("/");
+  if (segments.length > MAX_PATH_FOLDER_SEGMENTS) {
+    fail(path, `a folder has at most ${MAX_PATH_FOLDER_SEGMENTS} levels`);
+  }
+  segments.forEach((segment, index) => {
+    const level = `${path} (level ${index + 1})`;
+    if (segment.length === 0) fail(level, "must not be empty");
+    if (segment.length > MAX_PATH_FOLDER_SEGMENT_LENGTH) {
+      fail(level, `must be at most ${MAX_PATH_FOLDER_SEGMENT_LENGTH} characters`);
+    }
+    if (segment !== segment.trim()) fail(level, "must not have leading or trailing whitespace");
+  });
+  return folder;
+}
+
 export const ARTIFACT_TYPES = [
   "micro_code",
   "relational_map",
@@ -247,6 +273,9 @@ export interface LearningPath {
   /** Learner-owned grouping tags, e.g. `exam:step-2` or `field:systems`.
    * The Architect never writes them; they are filing, not curriculum. */
   readonly tags?: readonly string[];
+  /** The path's one home in the learner's folder tree, e.g. `exam/step-2`.
+   * Absent reads as unfiled; the Architect never writes it. */
+  readonly folder?: string;
   /** Architect conversation that created/refines this path. */
   readonly architectChatId?: string | null;
 }
@@ -682,6 +711,9 @@ function readLearningPathValue(value: unknown): LearningPath {
       ? { architectChatId: record.architectChatId }
       : { architectChatId: readId(record.architectChatId, `${path}.architectChatId`) }),
     ...(record.tags === undefined ? {} : { tags: readPathTags(record.tags, `${path}.tags`) }),
+    ...(record.folder === undefined
+      ? {}
+      : { folder: parsePathFolder(record.folder, `${path}.folder`) }),
   };
   assertPathGraph(parsed);
   return parsed;
