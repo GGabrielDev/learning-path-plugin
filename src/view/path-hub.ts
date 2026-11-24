@@ -29,6 +29,7 @@ import {
   ARTIFACT_TYPES,
   PROGRESSION_STATES,
   artifactCatalogEntry,
+  formatSourceAnchor,
   recommendedArtifactsFor,
 } from "../domain.ts";
 import { EVENT_ARCHITECT_CHANGED, EVENT_PATHS_CHANGED } from "../topics.ts";
@@ -154,7 +155,8 @@ export function mountPathHub(
   const createHost = element(document, "span", "lp-button-host");
   const refineHost = element(document, "span", "lp-button-host");
   const exportHost = element(document, "span", "lp-button-host");
-  headerActions.append(createHost, refineHost, exportHost);
+  const viewHost = element(document, "span", "lp-button-host");
+  headerActions.append(createHost, refineHost, exportHost, viewHost);
   const summary = element(document, "p", "lp-progress-summary");
   summary.setAttribute("aria-live", "polite");
   headerActions.append(summary);
@@ -172,15 +174,18 @@ export function mountPathHub(
   root.append(overviewContainer);
   const treePane = element(document, "section", "lp-tree-pane");
   treePane.setAttribute("aria-label", "Path hierarchy");
-  treePane.append(element(document, "h2", "lp-pane-title", "Path tree"));
+  const paneTitle = element(document, "h2", "lp-pane-title", "Path tree");
+  treePane.append(paneTitle);
   const treeHost = element(document, "div", "lp-tree-host");
+  const roadmapHost = element(document, "div", "lp-roadmap-host");
+  roadmapHost.hidden = true;
   const treeEmpty = element(
     document,
     "p",
     "lp-empty-state",
     "No learning paths yet. Use Create a Path to talk to the Architect.",
   );
-  treePane.append(treeHost, treeEmpty);
+  treePane.append(treeHost, roadmapHost, treeEmpty);
   const architectContainer = element(document, "div", "lp-architect-pane");
   const inspectorContainer = element(document, "div", "lp-inspector-pane");
   body.append(treePane, architectContainer, inspectorContainer);
@@ -199,7 +204,11 @@ export function mountPathHub(
   let loadToken = 0;
   let disposed = false;
   let startingSession = false;
+  /** The learner's lens over one path: outline tree or module lanes. */
+  let viewMode: "tree" | "roadmap" = "tree";
   let treeHandle: PluginWidgetHandle<PluginTreeProps> | null = null;
+  /** Badge handles owned by the current roadmap render; cleared per render. */
+  let roadmapHandles: PluginWidgetHandle<unknown>[] = [];
   const chatStatuses = new Map<string, SessionStatus>();
   const expanded = new Map<string, boolean>();
   const contentCache = new Map<string, ContentEntry>();
@@ -262,14 +271,14 @@ export function mountPathHub(
   function setExpanded(key: string, value: boolean): void {
     if (disposed || signal.aborted) return;
     expanded.set(key, value);
-    renderTree();
+    renderPathView();
   }
 
   function selectNode(nodeId: string | null): void {
     if (disposed || signal.aborted) return;
     selectedNodeId = nodeId;
     renderInspector();
-    renderTree();
+    renderPathView();
   }
 
   function cachedContent(key: string, signature: string, build: () => PluginUiContent): PluginUiContent {
@@ -421,11 +430,113 @@ export function mountPathHub(
     });
   }
 
-  function renderTree(): void {
-    if (disposed || signal.aborted) return;
-    treeEmpty.hidden = path !== null;
-    treeHost.hidden = path === null;
+  function disposeRoadmap(): void {
+    for (const handle of roadmapHandles.reverse()) handle.dispose();
+    roadmapHandles = [];
+    roadmapHost.replaceChildren();
+  }
+
+  function roadmapCard(node: PathNode): HTMLElement {
+    const card = document.createElement("button");
+    card.setAttribute("type", "button");
+    const selected = node.id === selectedNodeId;
+    card.className = selected ? "lp-roadmap-card lp-roadmap-card-selected" : "lp-roadmap-card";
+    card.setAttribute("aria-pressed", selected ? "true" : "false");
+    card.append(element(document, "span", "lp-roadmap-card-title", node.title));
+    const badges = element(document, "span", "lp-badge-row lp-roadmap-card-badges");
+    card.append(badges);
+    roadmapHandles.push(
+      ctx.ui.mountBadge(
+        badges,
+        { text: NODE_TYPE_LABELS[node.type], color: NODE_TYPE_COLORS[node.type] },
+        { signal },
+      ),
+    );
+    roadmapHandles.push(
+      ctx.ui.mountBadge(
+        badges,
+        { text: PROGRESSION_LABELS[node.progression], color: PROGRESSION_COLORS[node.progression] },
+        { signal },
+      ),
+    );
+    const unresolved = node.errors.filter((entry) => !entry.resolved).length;
+    if (unresolved > 0) {
+      roadmapHandles.push(
+        ctx.ui.mountBadge(
+          badges,
+          { text: `${unresolved} unresolved`, color: "var(--chart-6, #ef4444)" },
+          { signal },
+        ),
+      );
+    }
+    card.append(
+      element(document, "span", "lp-roadmap-card-anchor", formatSourceAnchor(node.sourceAnchor)),
+    );
+    if (node.childSessions.length > 0) {
+      const teaching = node.childSessions.filter((chat) => chat.kind === "teaching").length;
+      const practice = node.childSessions.length - teaching;
+      const parts: string[] = [];
+      if (teaching > 0) parts.push(`${teaching} teaching`);
+      if (practice > 0) parts.push(`${practice} practice`);
+      card.append(element(document, "span", "lp-muted", parts.join(" · ")));
+    }
+    card.addEventListener("click", () => {
+      if (signal.aborted || disposed) return;
+      selectNode(node.id);
+    });
+    return card;
+  }
+
+  /** Module lanes with node cards: renders only recorded structure. No arrows,
+   * no dates, no order pressure — just what the Architect wrote and the
+   * learner recorded. */
+  function buildRoadmap(): void {
     if (!path) return;
+    disposeRoadmap();
+    const board = element(document, "div", "lp-roadmap");
+    for (const module of path.modules) {
+      const lane = element(document, "section", "lp-lane");
+      lane.setAttribute("aria-label", module.title);
+      const laneHeader = element(document, "div", "lp-lane-header");
+      laneHeader.append(element(document, "h3", "lp-lane-title", module.title));
+      if (module.goal !== undefined) {
+        laneHeader.append(element(document, "p", "lp-lane-goal", module.goal));
+      }
+      const consolidated = module.nodes.filter((node) => node.progression === "consolidated").length;
+      laneHeader.append(
+        element(document, "span", "lp-muted", `${consolidated}/${module.nodes.length} consolidated`),
+      );
+      lane.append(laneHeader);
+      const cards = element(document, "div", "lp-lane-cards");
+      for (const node of module.nodes) {
+        cards.append(roadmapCard(node));
+      }
+      lane.append(cards);
+      board.append(lane);
+    }
+    roadmapHost.append(board);
+  }
+
+  function renderPathView(): void {
+    if (disposed || signal.aborted) return;
+    const roadmap = viewMode === "roadmap" && path !== null && path.modules.length >= 2;
+    paneTitle.textContent = roadmap ? "Path roadmap" : "Path tree";
+    treeEmpty.hidden = path !== null;
+    treeHost.hidden = path === null || roadmap;
+    roadmapHost.hidden = path === null || !roadmap;
+    if (path === null) {
+      disposeRoadmap();
+      return;
+    }
+    if (!roadmap) {
+      disposeRoadmap();
+    } else {
+      // One pane, one live widget: leaving roadmap mode remounts the tree.
+      treeHandle?.dispose();
+      treeHandle = null;
+      buildRoadmap();
+      return;
+    }
     const props: PluginTreeProps = {
       label: "Path hierarchy",
       header: "Path",
@@ -477,6 +588,12 @@ export function mountPathHub(
       variant: refineOpen ? "secondary" : "outline",
     });
     exportButton.update({ disabled: path === null });
+    const multiModule = path !== null && path.modules.length >= 2;
+    viewHost.hidden = !multiModule;
+    viewModeButton.update({
+      label: viewMode === "tree" ? "Roadmap view" : "Tree view",
+      variant: viewMode === "tree" ? "outline" : "secondary",
+    });
     // Keep the Architect visible while there is no path yet: that is how one is made.
     architectContainer.hidden = !refineOpen && summaries.length > 0;
   }
@@ -488,7 +605,7 @@ export function mountPathHub(
     // single empty state (the tree's) instead of two identical messages.
     overviewContainer.hidden = summaries.length === 0;
     overview.render(summaries, selectedPathId);
-    renderTree();
+    renderPathView();
     renderInspector();
   }
 
@@ -816,6 +933,23 @@ export function mountPathHub(
   );
   handles.push(exportButton);
 
+  const viewModeButton = ctx.ui.mountButton(
+    viewHost,
+    {
+      label: "Roadmap view",
+      variant: "outline",
+      size: "sm",
+      onClick: () => {
+        if (signal.aborted || disposed) return;
+        viewMode = viewMode === "tree" ? "roadmap" : "tree";
+        renderHeader();
+        renderPathView();
+      },
+    },
+    { signal },
+  );
+  handles.push(viewModeButton);
+
   pathSelect.addEventListener("change", () => {
     if (signal.aborted || disposed) return;
     void selectPath(pathSelect.value);
@@ -869,6 +1003,7 @@ export function mountPathHub(
     handles.length = 0;
     treeHandle?.dispose();
     treeHandle = null;
+    disposeRoadmap();
     inspector.dispose();
     overview.dispose();
     pane.dispose();
