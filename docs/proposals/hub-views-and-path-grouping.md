@@ -186,6 +186,14 @@ Where each piece would land, so the effort is estimable:
    path losing its last instance of that tag — the option stays listed, and
    the grid says "No paths carry this tag" instead of silently dropping the
    filter.
+6. Overridden after live review: the overview now **pages five path cards at a
+   time** with an honest pager (`Page x of y`, Previous/Next). The earlier
+   no-pagination rule was written before the dashboard existed; paging is
+   presentation, never hiding — the count line still reports the whole
+   filtered set, and no path is unreachable. Also from live review: the
+   detailed view floats (it used to squeeze the graph pane to half a
+   column), and closing it is an explicit learner choice that background
+   refreshes respect.
 6. The Path Hub's outline is now a graph, not a tree. The earlier "reject
    auto-graph" stance rejected *invented* edges and auto-arranged layouts; it
    did not reject drawing the structure the Architect recorded. The graph
