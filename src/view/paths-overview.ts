@@ -266,6 +266,15 @@ export function createPathsOverview(
     button(header, "Edit tags", () => openTagsDialog(summary), { variant: "outline", size: "xs" });
     cardRoot.append(header);
 
+    // The whole card selects the path; the title button stays the accessible
+    // control. Clicks landing on a card's own buttons keep their own action.
+    cardRoot.addEventListener("click", (event) => {
+      if (disposed || signal.aborted) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".lp-button-host")) return;
+      options.selectPath(summary.id);
+    });
+
     cardRoot.append(element(document, "p", "lp-path-card-goal", summary.goal));
     cardRoot.append(
       element(

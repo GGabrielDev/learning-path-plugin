@@ -130,6 +130,39 @@ test("a card click selects that path, like the header select", async () => {
   }
 });
 
+test("clicking anywhere on a card selects the path; a card's buttons keep their own action", async () => {
+  const fixture = createViewFixture({
+    paths: [makePath(), makeTaggedPath("path-two", [])],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+    const card = fixture.root.querySelector<HTMLElement>('.lp-path-card[data-path-id="path-two"]')!;
+    fire(card, "click");
+    await fixture.flush();
+
+    assert.deepEqual(
+      fixture.calls.filter((call) => call.name === "paths.get").at(-1)?.input,
+      { id: "path-two" },
+    );
+    assert.match(fixture.root.querySelector<HTMLElement>(".lp-goal")!.textContent ?? "", /Goal for path-two/);
+    const selected = fixture.root.querySelector<HTMLElement>(".lp-path-card-selected");
+    assert.equal(selected?.getAttribute("data-path-id"), "path-two");
+
+    // A click that lands inside a card's own button host is that button's
+    // action, never an accidental path switch.
+    const callsBefore = fixture.calls.filter((call) => call.name === "paths.get").length;
+    fire(card.querySelector<HTMLElement>(".lp-button-host")!, "click");
+    await fixture.flush();
+    assert.equal(
+      fixture.calls.filter((call) => call.name === "paths.get").length,
+      callsBefore,
+    );
+  } finally {
+    fixture.restore();
+  }
+});
+
 test("the tag filter groups cards client-side without refetching", async () => {
   const fixture = createViewFixture({
     paths: [
