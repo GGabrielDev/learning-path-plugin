@@ -1,10 +1,10 @@
 # Path Hub views and path grouping (research + brainstorm)
 
-Status: implemented on `exp/path-hub-views` (three commits: domain tags +
-`paths.updateMeta`, the Paths overview dashboard, the module-lane
-roadmap). The open decisions below are resolved as marked. The README
-workflow/test-table updates are pending, separate from in-flight README
-edits on the branch.
+Status: implemented on `exp/path-hub-views` (domain tags +
+`paths.updateMeta`, the Paths overview dashboard, the module-lane roadmap,
+and the recorded-structure graph). The open decisions below are resolved as
+marked. The README workflow/test-table updates are pending, separate from
+in-flight README edits on the branch.
 
 ## The question
 
@@ -91,11 +91,16 @@ answer to "a list of paths, grouped by exam or field."
 ### Graph/topology renderings
 
 Radial or force-directed node graphs. The irony: the framework *loves*
-relational maps — drawn by the learner as artifacts. An auto-generated graph of
-the path would be the machine doing the learner's generative work, plus it
-invents edges. **Fit: reject for path structure; keep relational maps as
-learner artifacts only** (they already surface via `artifactNote` in the
-inspector).
+relational maps — drawn by the learner as artifacts.
+
+The original objection here was sharper than "graphs are bad": an auto-generated
+graph would do the learner's generative work *and* invent edges the Architect
+never wrote. Both remain rejected. What is honest is narrower: a **deterministic
+graph of the recorded structure only** — modules as clusters, nodes as cards,
+and an edge exactly where `interleavesNodeIds` records one, laid out in module
+columns rather than by a force simulation. The Architect wrote those links; the
+view merely draws them. Relational maps stay learner artifacts (surfaced via
+`artifactNote` in the inspector), not a substitute for this view.
 
 ## Brainstorm: the two-surface proposal
 
@@ -118,13 +123,16 @@ inspector).
   and keeping them out of the Architect's tool surface means no drift between
   what the agent designed and how the learner files it.
 
-### Surface 2 — In-path view toggle: tree ↔ module-lane roadmap
+### Surface 2 — In-path view toggle: graph ↔ module-lane roadmap
 
-- Keep the tree (host primitive, tests, accessibility) as one mode.
-- Add a roadmap mode: each module is a horizontal lane; node cards show type
-  badge, progression badge, anchor, unresolved-error badge; no arrows, no
-  dates, no "up next" recommender. Checkpoints visually mark module ends;
-  accepted bridge nodes stand out as the repair history they are.
+- The default (and only outline) view is a recorded-structure graph: each
+  module is a cluster, each node a selectable card, and the only lines drawn
+  are the recorded `interleavesNodeIds` links. The host tree widget
+  (`ctx.ui.mountTree`) is gone from the Path Hub.
+- The alternate lens is the roadmap: each module is a horizontal lane; node
+  cards show type badge, progression badge, anchor, unresolved-error badge; no
+  arrows, no dates, no "up next" recommender. Checkpoints visually mark module
+  ends; accepted bridge nodes stand out as the repair history they are.
 - Selection behavior is identical in both modes (tap card → inspector), so the
   inspector, Architect pane and session-launch flow are untouched.
 - A toggle is honest to "advisory-only": the learner chooses the view; nothing
@@ -134,7 +142,9 @@ inspector).
 
 - Any "recommended next node" widget — even advisory, it reads as a schedule.
 - Percentage rings, streak-adjacent anything, due-anything.
-- Auto-drawn prerequisite edges or graph layouts.
+- Auto-drawn prerequisite edges, force-directed or otherwise auto-arranged
+  layouts. The graph draws only recorded `interleavesNodeIds` edges in a
+  deterministic module-column layout; it never infers a prerequisite.
 - Reordering nodes by drag-and-drop: the Architect is the only thing that
   restructures a path, via drafts and accepted pivots.
 
@@ -152,10 +162,11 @@ Where each piece would land, so the effort is estimable:
   instead of the header select in `src/view/path-hub.ts`; reuses
   `ctx.ui.mountBadge`, buttons and menus only; tests follow the existing
   `path-hub*` pattern (linkedom mount + in-memory backend).
-- **Roadmap mode (view):** a lane renderer over the same `LearningPath`
-  payload the tree already consumes; DOM-built cards inside the existing
-  tree pane host, one toggle button in the header; the `expanded` map and
-  `renderTree` dispatch becomes `renderPathView(mode)`.
+- **Graph and roadmap modes (view):** deterministic renderers over the same
+  `LearningPath` payload the tree used to consume; DOM-built cards inside the
+  existing path pane host, one toggle button in the header. The graph adds a
+  decorative, `aria-hidden` SVG edge layer positioned from card boxes; the
+  inspector's "Interleaved prior nodes" list remains the accessible record.
 
 ## Decisions, as implemented
 
@@ -170,8 +181,14 @@ Where each piece would land, so the effort is estimable:
    never stands alone.
 4. A 1-module path hides the toggle entirely (mounted but hidden, so the
    widget state stays consistent); a held `roadmap` mode falls back to the
-   tree if a path drops below two modules.
+   graph if a path drops below two modules.
 5. One extra rule surfaced during implementation: a held tag filter survives a
    path losing its last instance of that tag — the option stays listed, and
    the grid says "No paths carry this tag" instead of silently dropping the
    filter.
+6. The Path Hub's outline is now a graph, not a tree. The earlier "reject
+   auto-graph" stance rejected *invented* edges and auto-arranged layouts; it
+   did not reject drawing the structure the Architect recorded. The graph
+   therefore plots only `interleavesNodeIds` links, in module columns, with
+   the edges hidden from assistive tech — the inspector's interleaved-prior
+   list is the accessible equivalent.
