@@ -74,6 +74,51 @@ function tagMatches(tag: string, filter: string | null): boolean {
   return filter === null || tag.toLowerCase() === filter.toLowerCase();
 }
 
+/** The only orderings the overview offers. Neither implies priority: there is
+ * no "smart" order and no notion of a path being stale. */
+type SortKey = "updated" | "title";
+
+const DEFAULT_SORT: SortKey = "updated";
+
+const SORT_OPTIONS: readonly { readonly value: SortKey; readonly label: string }[] = [
+  { value: "updated", label: "Recently updated" },
+  { value: "title", label: "Title A–Z" },
+];
+
+function updatedTime(summary: PathSummary): number {
+  const time = Date.parse(summary.updatedAt);
+  return Number.isNaN(time) ? 0 : time;
+}
+
+/** Deterministic under either key: ties fall through to title, then id, so the
+ * order never depends on the order `paths.list` happened to return. */
+function inSortOrder(summaries: readonly PathSummary[], sort: SortKey): PathSummary[] {
+  return [...summaries].sort((a, b) => {
+    if (sort === "updated") {
+      const byUpdated = updatedTime(b) - updatedTime(a);
+      if (byUpdated !== 0) return byUpdated;
+    }
+    const byTitle = a.title.localeCompare(b.title);
+    return byTitle !== 0 ? byTitle : a.id.localeCompare(b.id);
+  });
+}
+
+/** Paths per tag, keyed lowercase so casing never splits a group. A path counts
+ * once per tag even if the record repeats it. */
+function tagCounts(summaries: readonly PathSummary[]): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const summary of summaries) {
+    const seen = new Set<string>();
+    for (const tag of summary.tags) {
+      const key = tag.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
 /** Parse and locally validate a comma-separated tag entry. Returns precise
  * learner-readable errors; the backend re-validates with the same domain rules. */
 function parseTagEntry(raw: string): { tags: readonly string[]; error: string | null } {
@@ -114,6 +159,7 @@ export function createPathsOverview(
   let handles: PluginWidgetHandle<unknown>[] = [];
   let disposed = false;
   let filterTag: string | null = null;
+  let sortKey: SortKey = DEFAULT_SORT;
   let latestSummaries: readonly PathSummary[] = [];
 
   const clear = (): void => {
@@ -338,6 +384,9 @@ export function createPathsOverview(
     root.append(element(document, "h2", "lp-pane-title", "Paths overview"));
 
     const tags = distinctTags(summaries);
+    const counts = tagCounts(summaries);
+    const controls = element(document, "div", "lp-overview-controls");
+
     // A held filter survives a path losing its last instance of the tag: the
     // option stays listed so the empty result can be cleared, never hidden.
     const optionTags =
@@ -349,11 +398,12 @@ export function createPathsOverview(
       field.append(element(document, "span", "lp-field-label", "Group"));
       const filterSelect = element(document, "select", "lp-select lp-overview-filter");
       filterSelect.setAttribute("aria-label", "Filter paths by tag");
-      const all = element(document, "option", undefined, "All paths");
+      const all = element(document, "option", undefined, `All paths (${summaries.length})`);
       all.value = "";
       filterSelect.append(all);
       for (const tag of optionTags) {
-        const option = element(document, "option", undefined, tag);
+        const count = counts.get(tag.toLowerCase()) ?? 0;
+        const option = element(document, "option", undefined, `${tag} (${count})`);
         option.value = tag;
         filterSelect.append(option);
       }
@@ -368,14 +418,51 @@ export function createPathsOverview(
         render(latestSummaries, selectedPathId);
       });
       field.append(filterSelect);
-      root.append(field);
+      controls.append(field);
     }
+
+    const sortField = element(document, "label", "lp-path-field");
+    sortField.append(element(document, "span", "lp-field-label", "Sort"));
+    const sortSelect = element(document, "select", "lp-select lp-overview-sort");
+    sortSelect.setAttribute("aria-label", "Sort paths");
+    for (const candidate of SORT_OPTIONS) {
+      const option = element(document, "option", undefined, candidate.label);
+      option.value = candidate.value;
+      if (candidate.value === sortKey) option.selected = true;
+      sortSelect.append(option);
+    }
+    sortSelect.addEventListener("change", () => {
+      if (disposed || signal.aborted) return;
+      const chosen = SORT_OPTIONS.find((candidate) => candidate.value === selectedValue(sortSelect));
+      if (!chosen) return;
+      sortKey = chosen.value;
+      render(latestSummaries, selectedPathId);
+    });
+    sortField.append(sortSelect);
+    controls.append(sortField);
+    root.append(controls);
+
+    const visible = inSortOrder(
+      summaries.filter(
+        (summary) => filterTag === null || summary.tags.some((tag) => tagMatches(tag, filterTag)),
+      ),
+      sortKey,
+    );
+    // The same filtered set drives the count and the grid, so the line can
+    // never disagree with what is on screen.
+    const countLine = element(
+      document,
+      "p",
+      "lp-overview-count",
+      filterTag === null
+        ? countLabel(summaries.length, "path")
+        : `${visible.length} of ${countLabel(summaries.length, "path")}`,
+    );
+    countLine.setAttribute("role", "status");
+    root.append(countLine);
 
     const cards = element(document, "div", "lp-overview-cards");
     root.append(cards);
-    const visible = summaries.filter(
-      (summary) => filterTag === null || summary.tags.some((tag) => tagMatches(tag, filterTag)),
-    );
     if (visible.length === 0 && summaries.length > 0) {
       cards.append(
         element(document, "p", "lp-empty-state", "No paths carry this tag. Clear the group filter to see them all."),

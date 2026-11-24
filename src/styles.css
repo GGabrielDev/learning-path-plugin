@@ -349,9 +349,27 @@
   gap: 12px;
 }
 
+.lp-overview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+}
+
 .lp-overview-filter {
   align-self: flex-end;
   max-width: 18rem;
+}
+
+.lp-overview-sort {
+  align-self: flex-end;
+  max-width: 14rem;
+}
+
+.lp-overview-count {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted-foreground, var(--foreground));
 }
 
 .lp-overview-cards {
