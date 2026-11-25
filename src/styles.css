@@ -254,6 +254,27 @@
   display: none;
 }
 
+/* Fullscreen: the ledger takes the whole window (a small fixed margin), the
+   bar stays on top, the body fills and scrolls, and the open note's scroll
+   cap lifts so the full text reads with ordinary scrolling. */
+.lp-workspace-pane.lp-workspace-fullscreen {
+  position: fixed;
+  inset: 12px;
+  width: auto;
+  max-height: none;
+  z-index: 60;
+}
+
+.lp-workspace-pane.lp-workspace-fullscreen .lp-workspace-body {
+  flex: 1;
+}
+
+.lp-workspace-pane.lp-workspace-fullscreen .lp-workspace-viewer-content {
+  max-height: none;
+  overflow-y: visible;
+  padding-right: 0;
+}
+
 .lp-workspace-body {
   min-height: 0;
   display: flex;
@@ -410,18 +431,11 @@
 .lp-workspace-viewer-content {
   min-height: 0;
   overflow-wrap: anywhere;
-  /* Scrollable, not squashed: the note reads inside a bounded window first. */
+  /* Scrollable, not squashed: the note reads inside its own bounded window
+     while the pane floats; Fullscreen lifts the cap. */
   max-height: min(52vh, 34rem);
   overflow-y: auto;
   padding-right: 4px;
-}
-
-/* Expanded: the window cap comes off and the pane's own scroller carries the
-   full note instead, so nothing is left unreachable. */
-.lp-workspace-viewer-content.lp-workspace-viewer-expanded {
-  max-height: none;
-  overflow-y: visible;
-  padding-right: 0;
 }
 
 .lp-workspace-viewer-markdown p:first-child {

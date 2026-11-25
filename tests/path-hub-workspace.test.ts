@@ -823,7 +823,7 @@ test("Select from computer files a picked document through the same filing dialo
   }
 });
 
-test("the note viewer is expandable and scrollable, and Expand hands the scroll to the pane", async () => {
+test("Fullscreen stretches the ledger across the whole window and lifts the note's scroll cap", async () => {
   const path = makePath();
   const longBody = `# Long note\n\n${"paragraph of the learner's own writing.\n\n".repeat(40)}`;
   const fixture = createViewFixture({
@@ -834,33 +834,45 @@ test("the note viewer is expandable and scrollable, and Expand hands the scroll 
     await mounted(fixture);
     selectRoadmapCard(fixture.root, "n-skill");
     await openPane(fixture);
+    const pane = workspacePane(fixture.root);
+    assert.ok(!pane.classList.contains("lp-workspace-fullscreen"), "the ledger starts as the floating half pane");
+
     const row = workspaceBody(fixture.root).querySelector<HTMLElement>(".lp-workspace-row")!;
     await rowTitleButton(fixture, row, "Feynman notes on vector spaces").props.onClick();
     await fixture.flush();
     await fixture.flush();
-
-    const content = workspaceBody(fixture.root).querySelector<HTMLElement>(".lp-workspace-viewer-content")!;
-    assert.ok(content, "the viewer renders the note's own content region");
-    assert.ok(!content.classList.contains("lp-workspace-viewer-expanded"), "the note starts in its bounded, scrolling window");
+    assert.ok(
+      workspaceBody(fixture.root).querySelector(".lp-workspace-viewer-content"),
+      "the viewer renders the note's own content region",
+    );
 
     const paneButtons = (label: string) =>
       fixture.all("mountButton").filter((record) => record.props.label === label && paneRoot(fixture.root).contains(record.container));
-    const expand = paneButtons("Expand")[0]!;
-    assert.ok(expand, "the viewer offers Expand");
-    await expand.props.onClick();
+    const fullscreen = paneButtons("Fullscreen")[0]!;
+    assert.ok(fullscreen, "the pane bar carries the Fullscreen affordance");
+    await fullscreen.props.onClick();
     await fixture.flush();
     assert.ok(
-      workspaceBody(fixture.root).querySelector(".lp-workspace-viewer-content")!.classList.contains("lp-workspace-viewer-expanded"),
-      "expanded, the window cap comes off and the pane's scroller carries the full note",
+      pane.classList.contains("lp-workspace-fullscreen"),
+      "fullscreen takes the whole window, and its CSS lifts the open note's scroll cap so the full text reads whole",
     );
-    const restore = paneButtons("Restore")[0]!;
-    assert.ok(restore, "the viewer offers Restore");
-    await restore.props.onClick();
+
+    const exit = paneButtons("Exit fullscreen")[0]!;
+    assert.ok(exit, "the bar offers the way back");
+    await exit.props.onClick();
     await fixture.flush();
-    assert.ok(
-      !workspaceBody(fixture.root).querySelector(".lp-workspace-viewer-content")!.classList.contains("lp-workspace-viewer-expanded"),
-      "restored, the bounded window is back",
-    );
+    assert.ok(!pane.classList.contains("lp-workspace-fullscreen"), "the floating half pane is back");
+
+    // Closing the pane leaves fullscreen behind: reopening starts floating.
+    await paneButtons("Close")[0]!.props.onClick();
+    await fullscreen.props.onClick();
+    await fixture.flush();
+    assert.ok(pane.classList.contains("lp-workspace-fullscreen"), "back in fullscreen for the close reset");
+    await paneButtons("Close")[0]!.props.onClick();
+    await fixture.flush();
+    assert.ok(!pane.classList.contains("lp-workspace-fullscreen"), "a closed pane resets fullscreen");
+    await openPane(fixture);
+    assert.ok(!pane.classList.contains("lp-workspace-fullscreen"), "reopening starts from the floating window");
   } finally {
     clearPathHubTarget();
     fixture.restore();

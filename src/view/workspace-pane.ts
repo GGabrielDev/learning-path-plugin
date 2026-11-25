@@ -31,10 +31,11 @@
  * into the workspace.
  *
  * Reading: item kinds render as small icons (hover carries the word), and an
- * opened item reads in a bounded, scrolling viewer whose Expand toggle hands
- * the scroll to the pane body so a long note is never clipped. The pane bar's
- * Open folder affordance (mounted by the hub, not here) reveals the path's
- * workspace directory through `workspace.openDirectory`.
+ * opened item reads in a bounded, scrolling viewer. The pane bar's hub-owned
+ * affordances do the rest: Fullscreen stretches the pane across the whole
+ * window and lifts the viewer's scroll cap so a long note reads whole, and
+ * Open folder reveals the path's workspace directory through
+ * `workspace.openDirectory`.
  *
  * Learner-only writes. Agents never create, edit, link or delete learner
  * items. Everything rendered here is controlled by the caller (path, node and
@@ -186,10 +187,6 @@ export function createWorkspacePane(
   let viewerContent: string | null = null;
   let viewerState: "loading" | "loaded" | "error" = "loaded";
   let viewerError = "";
-  /** The learner expanded the open item's viewer: the content's own scroll
-   * cap comes off and the pane body's scroller takes over, so a long note
-   * reads whole instead of scrolling inside a small window. */
-  let viewerExpanded = false;
 
   const clear = (): void => {
     for (const handle of handles.reverse()) handle.dispose();
@@ -652,8 +649,6 @@ export function createWorkspacePane(
     viewerContent = null;
     viewerState = "loading";
     viewerError = "";
-    // A fresh item starts collapsed: its content scrolls inside the viewer.
-    viewerExpanded = false;
     // The caller re-renders after the fetch resolves; the pane paints the
     // loading state immediately so the demand-read is visible.
     void (async () => {
@@ -684,7 +679,6 @@ export function createWorkspacePane(
       viewerItemId = null;
       viewerContent = null;
       viewerState = "loaded";
-      viewerExpanded = false;
       rerender();
     }, { variant: "outline" });
     const meta = element(document, "div", "lp-workspace-viewer-meta");
@@ -696,31 +690,12 @@ export function createWorkspacePane(
       );
     }
     head.append(meta);
-    // Expandable and scrollable: collapsed, the content scrolls inside a
-    // bounded window; expanded, the cap comes off and the pane scrolls.
-    button(
-      head,
-      viewerExpanded ? "Restore" : "Expand",
-      () => {
-        viewerExpanded = !viewerExpanded;
-        rerender();
-      },
-      {
-        variant: "outline",
-        title: viewerExpanded
-          ? "Fit the item's content back into the pane's scroller"
-          : "Show the full note using the whole pane",
-      },
-    );
     root.append(head);
 
-    const body = element(
-      document,
-      "div",
-      viewerExpanded
-        ? "lp-workspace-viewer-content lp-workspace-viewer-expanded"
-        : "lp-workspace-viewer-content",
-    );
+    // Scrollable, never squashed: the note reads inside its own bounded
+    // window, and the hub's Fullscreen toggle (in the pane bar) stretches
+    // the whole pane and lifts this cap so the full text reads whole.
+    const body = element(document, "div", "lp-workspace-viewer-content");
     if (viewerState === "loading") {
       body.append(element(document, "p", "lp-muted", "Loading…"));
     } else if (viewerState === "error") {

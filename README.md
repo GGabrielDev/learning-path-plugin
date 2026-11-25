@@ -306,11 +306,12 @@ the source's id and never copies content — so re-uploading the same file reuse
 the stored copy and never files it twice.
 
 The pane itself stays honest and navigable: item kinds read as small icons
-(hover carries the word), an opened note renders in a bounded, scrolling viewer
-that **Expand** stretches to the whole pane, and **Open folder** reveals the
-selected path's workspace directory in your computer's file manager
-(`workspace.openDirectory`; the folder materializes on demand, and an empty
-workspace opens too).
+(hover carries the word), an opened note renders in a bounded, scrolling
+viewer, **Fullscreen** stretches the ledger across the whole window (lifting
+the note's scroll cap so the full text reads with ordinary scrolling), and
+**Open folder** reveals the selected path's workspace directory in your
+computer's file manager (`workspace.openDirectory`; the folder materializes
+on demand, and an empty workspace opens too).
 
 ## Project layout
 

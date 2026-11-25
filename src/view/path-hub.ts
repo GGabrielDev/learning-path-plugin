@@ -219,9 +219,10 @@ export function mountPathHub(
   workspacePaneContainer.hidden = true;
   const workspaceBar = element(document, "div", "lp-inspector-bar");
   workspaceBar.append(element(document, "span", "lp-inspector-bar-title", "Workspace ledger"));
+  const workspaceFullscreenHost = element(document, "span", "lp-button-host");
   const workspaceOpenHost = element(document, "span", "lp-button-host");
   const workspaceCloseHost = element(document, "span", "lp-button-host");
-  workspaceBar.append(workspaceOpenHost, workspaceCloseHost);
+  workspaceBar.append(workspaceFullscreenHost, workspaceOpenHost, workspaceCloseHost);
   workspacePaneContainer.append(workspaceBar);
   const workspaceBody = element(document, "div", "lp-workspace-body");
   workspacePaneContainer.append(workspaceBody);
@@ -247,6 +248,10 @@ export function mountPathHub(
   /** The learner opened the workspace ledger pane; refreshes keep it open,
    * closing the detailed view or the pane itself is the explicit close. */
   let workspaceOpen = false;
+  /** The learner stretched the ledger across the whole window: the pane
+   * becomes a fixed overlay and the open note's scroll cap lifts, so the full
+   * text reads with ordinary scrolling. */
+  let workspaceFullscreen = false;
   let refineOpen = false;
   /** Path whose Architect conversation was last opened automatically. Background
    * refreshes for the same path never switch away from the conversation in view. */
@@ -562,7 +567,27 @@ export function mountPathHub(
    * over the hub's right half; the pane stays open across background refreshes
    * and closes only when the learner closes it (or the detailed view). */
   function positionWorkspacePane(): void {
+    // Fullscreen pins itself (fixed inset from the CSS); the measured header
+    // offset belongs to the floating half pane only.
+    if (workspaceFullscreen) {
+      workspacePaneContainer.style.top = "";
+      return;
+    }
     workspacePaneContainer.style.top = `${header.offsetTop + header.offsetHeight + 12}px`;
+  }
+
+  /** One toggle behind the bar button and the pane's own affordances. */
+  function toggleWorkspaceFullscreen(next: boolean): void {
+    if (disposed || signal.aborted) return;
+    workspaceFullscreen = next;
+    workspacePaneContainer.classList.toggle("lp-workspace-fullscreen", next);
+    workspaceFullscreenButton.update({
+      label: next ? "Exit fullscreen" : "Fullscreen",
+      title: next
+        ? "Return the ledger to its floating half pane"
+        : "Show the workspace ledger across the whole window",
+    });
+    positionWorkspacePane();
   }
 
   function renderWorkspacePane(): void {
@@ -570,7 +595,12 @@ export function mountPathHub(
     const show = workspaceOpen && path !== null;
     workspacePaneContainer.hidden = !show;
     // A closed pane mounts nothing; opening renders fresh from the manifest.
-    if (!show) return;
+    if (!show) {
+      // Closing the pane also leaves fullscreen behind: reopening starts
+      // from the ordinary floating window.
+      if (workspaceFullscreen) toggleWorkspaceFullscreen(false);
+      return;
+    }
     positionWorkspacePane();
     workspacePane.render(path, path ? nodeById(path, selectedNodeId) : null, workspace);
   }
@@ -1110,6 +1140,22 @@ export function mountPathHub(
     { signal },
   );
   handles.push(inspectorCloseButton);
+
+  const workspaceFullscreenButton = ctx.ui.mountButton(
+    workspaceFullscreenHost,
+    {
+      label: "Fullscreen",
+      variant: "outline",
+      size: "sm",
+      title: "Show the workspace ledger across the whole window",
+      onClick: () => {
+        if (signal.aborted || disposed) return;
+        toggleWorkspaceFullscreen(!workspaceFullscreen);
+      },
+    },
+    { signal },
+  );
+  handles.push(workspaceFullscreenButton);
 
   const workspaceOpenButton = ctx.ui.mountButton(
     workspaceOpenHost,
