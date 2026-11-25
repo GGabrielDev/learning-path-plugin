@@ -137,24 +137,33 @@ Knowledge Graph records.
    creates a native session, stages a tailored opening brief and opens it. Linked
    sessions get `learning_path_*` tools that read the brief and write progress,
    errors and advisory pivots. Unlinked sessions get no tools at all.
-4. **Record what happened.** Progression is ungated:
+4. **Keep your own material in the Workspace.** Select a node and use the
+   **Add Note** button in its Workspace section to file your own Markdown —
+   pasted from your editor and stored exactly as written, never reformatted.
+   Link or unlink a note to the node you are viewing; delete items you no longer
+   want. A child session's brief lists the material linked to its node by kind
+   and title only, and reads the full text through the bounded
+   `learning_path_read_workspace_item` tool — so the brief stays small no matter
+   how much you file. Agents can never create, edit, link or delete your items.
+5. **Record what happened.** Progression is ungated:
    `unstarted → in_progress → consolidated`. Log mistakes by cognitive root
    cause; unresolved entries travel forward as watchpoints. If a topic genuinely
    is not sticking, the agent may suggest a bounded detour; you accept, discuss
    or dismiss it. The path is never restructured silently.
-5. **Tune defaults.** Settings → Learning Paths configures artifact defaults per
+6. **Tune defaults.** Settings → Learning Paths configures artifact defaults per
    node type (with the framework's justification), experimental graph-informed
    tutoring (default off), the Architect model/thinking preference, and safe path
    deletion. Saving a new Architect model while an
    Architect run is in progress never cancels it; the model applies once the run
    finishes.
-6. **Export a path.** Use **Export Path** in the Path Hub, or **Export JSON** /
+7. **Export a path.** Use **Export Path** in the Path Hub, or **Export JSON** /
    **Export Markdown** beside a path in Settings → Learning Paths. JSON is a
    validated, pretty-printed copy of the complete path record. Markdown is a
    readable document with the goal, progress, source spine, modules, nodes,
-   anchors, effective artifacts, child sessions, error ledger and pivot
-   suggestions. Both download locally; exporting never changes the path or any
-   native chat.
+   anchors, effective artifacts, child sessions, error ledger, pivot
+   suggestions and — when the path has one — its Workspace, with your notes
+   carried verbatim. Both download locally; exporting never changes the path or
+   any native chat.
 
 There is deliberately **no scheduling**: no hours, days, streaks or completion
 dates. Any node can be opened at any time.
@@ -254,6 +263,18 @@ Each entry can be resolved or annotated with a reflection note. A pending
 **Pivot Suggestion** proposes a `bridge`, `contrast` or `skill` node with its
 diagnosis; only the learner can accept it. Dismissing it changes nothing.
 
+## Workspace
+
+Every path has one Workspace: your own material for that path — notes now,
+more kinds later — listed in a flat ledger, newest last. It is navigational
+inventory: honest counts, no unread markers, no "new" badges, and no scheduling
+semantics of any kind. Notes are Markdown stored verbatim (the ledger's manifest
+is an index; the files under `workspaces/` are the truth), items can link to
+nodes you choose, and deleting a path deletes its workspace. Child sessions see
+linked items by kind and title only; the full text is available to them through
+a bounded chunked read tool. Agents may save their own session artifacts in a
+later phase, but they never create, edit, link or delete learner items.
+
 ## Project layout
 
 | Path | What |
@@ -265,6 +286,7 @@ diagnosis; only the learner can accept it. Dismissing it changes nothing.
 | `src/architect-agent.ts` | Persistent Path Architect definition and server tools |
 | `src/backend.ts` | RPC handlers, events, native bridge and activation lifecycle |
 | `src/view/path-hub.ts` | Path Hub: header, roadmap lanes, Architect pane, Node Inspector |
+| `src/view/workspace-ledger.ts` | Workspace ledger in the Node Inspector: flat list, add note, link/unlink, delete |
 | `src/view/*` | Architect chat, inspector, error ledger, pivots, dialogs, tool cards |
 | `src/settings.ts` | Artifact defaults, graph-tutoring opt-in, Architect model, safe path deletion |
 | `src/graph-context.ts` | Bounded read-only proposition matching and shared graph-tutoring rules |
