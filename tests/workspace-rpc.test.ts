@@ -311,9 +311,19 @@ test("no agent tool writes learner workspace items; agents only read", async () 
       .length > 0
       ? (await import("../src/tool-names.ts")).LEARNING_PATH_TOOL_NAMES
       : [];
+    // Workspace writes: agents never delete anything, and the one save tool
+    // writes only the session's own session_artifact item (provenance
+    // session:<chatId>, asserted behaviourally in native-bridge.test.ts).
+    // Learner items stay learner-owned.
     assert.ok(
-      nativeToolNames.every((name) => !name.includes("save") && !name.includes("delete")),
+      nativeToolNames.every((name) => !name.includes("delete")),
       "native tools stay read-only for learner items",
+    );
+    assert.ok(
+      nativeToolNames.filter((name) => name.includes("save")).every(
+        (name) => name === "learning_path_save_artifact",
+      ),
+      "the only workspace write is the session's own session_artifact item",
     );
   } finally {
     close(host, directory);

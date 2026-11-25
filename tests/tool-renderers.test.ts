@@ -80,6 +80,15 @@ test("renders brief, progress, error and pivot results as short readable cards",
         },
         expected: /Advisory bridge node: Repair prerequisite.*Pending; the path was not changed/s,
       },
+      {
+        toolName: "learning_path_save_artifact",
+        output: {
+          nodeTitle: "Node n-concept",
+          itemTitle: "My concurrency map",
+          characterCount: 512,
+        },
+        expected: /Saved artifact: My concurrency map.*512 characters.*Node n-concept/s,
+      },
     ];
 
     for (const entry of cases) {

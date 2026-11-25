@@ -233,3 +233,36 @@ test("the ledger survives an unknown-node row and fires no read-state widgets", 
     fixture.restore();
   }
 });
+
+test("session artifacts render with their originating session", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({
+    paths: [path],
+    workspaceItems: [
+      {
+        item: makeItem({
+          kind: "session_artifact",
+          title: "Saved relational map",
+          addedBy: "session:chat-map-1",
+          links: [{ to: "n-skill", rel: "produced_by" }],
+        }),
+        content: "# Map of the earlier session",
+      },
+    ],
+  });
+  try {
+    await mounted(fixture);
+    selectRoadmapCard(fixture.root, "n-skill");
+    await fixture.flush();
+
+    const row = fixture.root.querySelector<HTMLElement>(".lp-workspace-row")!;
+    assert.ok(row, "the saved artifact appears in the ledger");
+    assert.match(row.textContent ?? "", /Session artifact/);
+    assert.match(row.textContent ?? "", /Saved relational map/);
+    assert.match(row.textContent ?? "", /linked \(produced_by\)/);
+    assert.match(row.textContent ?? "", /saved by session chat-map-1/);
+  } finally {
+    clearPathHubTarget();
+    fixture.restore();
+  }
+});

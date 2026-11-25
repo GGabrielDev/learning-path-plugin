@@ -223,6 +223,12 @@ export function createWorkspaceLedger(
     if (linkToNode) {
       row.append(element(document, "span", "lp-muted", `linked (${linkToNode.rel})`));
     }
+    // Session artifacts carry their provenance: which session saved them.
+    if (item.kind === "session_artifact" && item.addedBy.startsWith("session:")) {
+      row.append(
+        element(document, "span", "lp-muted", `saved by ${item.addedBy.replace(":", " ")}`),
+      );
+    }
     const actions = element(document, "span", "lp-workspace-row-actions");
     row.append(actions);
     if (linkToNode) {
