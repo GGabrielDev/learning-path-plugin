@@ -167,6 +167,173 @@
   z-index: 1;
 }
 
+/* The workspace ledger pane floats the same way as the detailed view: it
+ * hangs under the header (top offset set from the measured header height),
+ * never takes the full window height, and scrolls its own body. */
+.lp-workspace-pane {
+  position: absolute;
+  right: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: calc(50% - 10px);
+  max-height: min(72vh, 44rem);
+  padding: clamp(10px, 1.5vw, 16px);
+  border: 1px solid var(--border, #e4e4e7);
+  border-radius: 10px;
+  background: var(--card, var(--background));
+  box-shadow: 0 24px 48px rgb(0 0 0 / 28%), 0 6px 16px rgb(0 0 0 / 14%);
+  z-index: 45;
+}
+
+.lp-workspace-pane[hidden] {
+  display: none;
+}
+
+.lp-workspace-body {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+/* The inspector's one calm affordance for the ledger: room to breathe, one
+ * hint line, no inline list. */
+.lp-workspace-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+
+.lp-workspace-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 8px;
+}
+
+.lp-workspace-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.lp-workspace-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  padding: 10px 2px;
+  border-top: 1px solid var(--border, #e4e4e7);
+}
+
+.lp-workspace-row:first-child {
+  border-top: none;
+}
+
+.lp-workspace-row-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.lp-workspace-links {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.lp-workspace-row-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* The read-only viewer: the pane body scrolls; content renders verbatim. */
+.lp-workspace-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lp-workspace-viewer-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+
+.lp-workspace-viewer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.lp-workspace-item-title {
+  margin: 0;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.lp-workspace-viewer-content {
+  min-height: 0;
+  overflow-wrap: anywhere;
+}
+
+.lp-workspace-viewer-markdown p:first-child {
+  margin-top: 0;
+}
+
+.lp-workspace-viewer-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+/* Node picker (add-note dialog and links dialog): a scrollable checkbox list,
+ * the one filing surface for multi-node links. */
+.lp-workspace-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 14rem;
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+
+.lp-workspace-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.lp-workspace-note-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: min(28rem, 80vw);
+}
+
+.lp-workspace-links-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: min(24rem, 80vw);
+}
+
+.lp-workspace-note-body {
+  min-height: 10rem;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
 .lp-inspector-bar-title {
   font-size: 0.9rem;
   font-weight: 650;
