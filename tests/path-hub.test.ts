@@ -630,6 +630,59 @@ test("the detailed view floats: it never squeezes the roadmap, and Close deselec
   }
 });
 
+test("the floating details auto-hide their title bar on scroll and expand on demand", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({
+    paths: [path],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+
+    // The frame carries a drag grip; an inner scroller owns the overflow so
+    // the grip never scrolls with the content, and the bar sits inside it.
+    const pane = fixture.root.querySelector<HTMLElement>(".lp-inspector-pane")!;
+    const scroller = pane.querySelector<HTMLElement>(".lp-inspector-scroll")!;
+    const bar = pane.querySelector<HTMLElement>(".lp-inspector-bar")!;
+    assert.ok(pane.querySelector(".lp-inspector-grip"), "the frame exposes a resize grip");
+    assert.ok(!bar.classList.contains("lp-inspector-bar-hidden"), "the bar starts visible");
+
+    // Scrolling down past the threshold fades the bar out of the way…
+    scroller.scrollTop = 100;
+    fire(scroller, "scroll");
+    assert.ok(bar.classList.contains("lp-inspector-bar-hidden"), "scrolling down hides the bar");
+
+    // …and scrolling back up brings the title, Expand and Close back.
+    scroller.scrollTop = 40;
+    fire(scroller, "scroll");
+    assert.ok(!bar.classList.contains("lp-inspector-bar-hidden"), "scrolling up restores the bar");
+
+    // Switching nodes rewinds to the top with the bar in place.
+    scroller.scrollTop = 100;
+    fire(scroller, "scroll");
+    assert.ok(bar.classList.contains("lp-inspector-bar-hidden"));
+    await selectRoadmapCard(fixture.root, "n-concept");
+    assert.ok(!bar.classList.contains("lp-inspector-bar-hidden"), "a fresh node starts unscrolled");
+
+    // Expand stretches the window across the hub; Restore brings it back.
+    const expand = liveButtons(fixture).find((button) => button.props.label === "Expand")!;
+    assert.ok(expand, "the bar carries an expand control");
+    await expand.props.onClick();
+    assert.ok(pane.classList.contains("lp-inspector-expanded"), "expanding widens the window");
+    const restore = liveButtons(fixture).find((button) => button.props.label === "Restore")!;
+    assert.ok(restore, "the expand control becomes a restore control");
+    await restore.props.onClick();
+    assert.ok(!pane.classList.contains("lp-inspector-expanded"), "restoring returns to the half");
+
+    // Close still deselects with the new bar layout.
+    await liveButtons(fixture).find((button) => button.props.label === "Close")!.props.onClick();
+    await fixture.flush();
+    assert.equal(pane.hidden, true, "close keeps working from the auto-hiding bar");
+  } finally {
+    fixture.restore();
+  }
+});
+
 test("an empty hub offers Create a Path and does not invent a roadmap or inspector node", async () => {
   const fixture = createViewFixture();
   try {
