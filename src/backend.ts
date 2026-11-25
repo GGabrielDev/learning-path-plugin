@@ -34,6 +34,9 @@ import {
   DomainValidationError,
   PROGRESSION_STATES,
   MAX_PATH_TAGS,
+  MAX_WORKSPACE_ITEM_TITLE_LENGTH,
+  MAX_WORKSPACE_NOTE_BYTES,
+  WORKSPACE_LINK_RELS,
   parsePathFolder,
   parsePathTag,
   parsePluginSettings,
@@ -45,6 +48,8 @@ import type {
   LearningPath,
   PathNode,
   PluginSettings,
+  WorkspaceLinkRel,
+  WorkspaceItem,
 } from "./domain.ts";
 import { buildChildSessionBrief } from "./framework.ts";
 import { exportLearningPath } from "./export.ts";
@@ -72,6 +77,7 @@ import {
   EVENT_PATHS_CHANGED,
   EVENT_SETTINGS_CHANGED,
   EVENT_SOURCES_CHANGED,
+  EVENT_WORKSPACE_CHANGED,
 } from "./topics.ts";
 import type { ArchitectProgress } from "./topics.ts";
 
@@ -81,6 +87,7 @@ export {
   EVENT_PATHS_CHANGED,
   EVENT_SETTINGS_CHANGED,
   EVENT_SOURCES_CHANGED,
+  EVENT_WORKSPACE_CHANGED,
 };
 
 const MAX_REQUEST_ID = 200;
@@ -164,6 +171,13 @@ function readPivotAction(value: unknown): PivotAction {
     throw new Error('action must be "accept" or "dismiss".');
   }
   return value;
+}
+
+function readLinkRel(value: unknown): WorkspaceLinkRel {
+  if (typeof value !== "string" || !(WORKSPACE_LINK_RELS as readonly string[]).includes(value)) {
+    throw new Error(`rel must be one of: ${WORKSPACE_LINK_RELS.join(", ")}.`);
+  }
+  return value as WorkspaceLinkRel;
 }
 
 /** Learner grouping tags, validated with the domain's own rules so the store
@@ -583,7 +597,13 @@ export function activate(ctx: PluginBackendContext): void {
     }
     const path = store.path(pathId);
     if (!path) throw new Error(`Unknown path: ${pathId}`);
-    return exportLearningPath(path, value.format, store.settings());
+    // The Workspace rides along on Markdown exports; notes are carried verbatim.
+    const workspace = store.workspace(pathId);
+    const workspaceItems = (workspace?.items ?? []).map((item) => ({
+      item,
+      content: store.readWorkspaceItemContent(pathId, item.id),
+    }));
+    return exportLearningPath(path, value.format, store.settings(), workspaceItems);
   });
 
   // ---- Settings -----------------------------------------------------------
@@ -848,6 +868,109 @@ export function activate(ctx: PluginBackendContext): void {
     return saved;
   });
 
+  // ---- Workspace (learner-owned material) ---------------------------------
+
+  // Learner items are created, edited, linked and deleted only through these
+  // frontend RPCs: no agent tool ever writes a learner workspace item. The
+  // manifest is the index; files under workspaces/<pathId>/files/ are the truth.
+  handle("workspace.list", (input) => {
+    const pathId = readText(object(input, "workspace.list").pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    return { workspace: store.workspace(pathId) };
+  });
+
+  handle("workspace.saveNote", (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "workspace.saveNote");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    const title = readText(value.title, "title", {
+      max: MAX_WORKSPACE_ITEM_TITLE_LENGTH,
+      trim: true,
+    });
+    // Verbatim: never trimmed, normalized or converted. The learner's editor is
+    // the source of truth for their own writing; the workspace stores it as-is.
+    // The bound counts characters here; the store enforces the byte cap.
+    const markdown = readText(value.markdown, "markdown", { max: MAX_WORKSPACE_NOTE_BYTES });
+    if (markdown.trim().length === 0) throw new Error("markdown must not be blank.");
+    const caption =
+      value.caption === undefined
+        ? undefined
+        : readText(value.caption, "caption", { max: 2000, trim: true });
+    const nodeId = value.nodeId === undefined ? undefined : readText(value.nodeId, "nodeId", { max: 128 });
+    const rel = value.rel === undefined ? "informs" : readLinkRel(value.rel);
+    const links = nodeId === undefined ? [] : [{ to: nodeId, rel }];
+    const item = store.saveWorkspaceItem(
+      pathId,
+      {
+        kind: "note",
+        title,
+        addedBy: "learner",
+        links,
+        ...(caption === undefined ? {} : { caption }),
+      },
+      markdown,
+    );
+    emit(EVENT_WORKSPACE_CHANGED, { pathId, itemId: item.id });
+    return { item };
+  });
+
+  /** Bounded read: content files are capped at MAX_WORKSPACE_NOTE_BYTES on
+   * write, source items reference the global sources store and carry no file. */
+  handle("workspace.readItem", (input) => {
+    const value = object(input, "workspace.readItem");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    const itemId = readText(value.itemId, "itemId", { max: 128 });
+    const item = store.workspace(pathId)?.items.find((candidate) => candidate.id === itemId) ?? null;
+    if (!item) throw new Error(`Unknown workspace item: ${itemId}`);
+    return { item, content: store.readWorkspaceItemContent(pathId, itemId) };
+  });
+
+  // Learner filing only: title, caption and link relations. Nothing here ever
+  // touches progression, ordering or any scheduling semantics.
+  handle("workspace.updateItemMeta", (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "workspace.updateItemMeta");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    const itemId = readText(value.itemId, "itemId", { max: 128 });
+    const changes: Record<string, unknown> = {};
+    if (value.title !== undefined) {
+      changes.title = readText(value.title, "title", {
+        max: MAX_WORKSPACE_ITEM_TITLE_LENGTH,
+        trim: true,
+      });
+    }
+    if (value.caption !== undefined) {
+      changes.caption =
+        value.caption === null
+          ? null
+          : readText(value.caption, "caption", { max: 2000, trim: true });
+    }
+    if (value.links !== undefined) {
+      if (!Array.isArray(value.links)) throw new Error("links must be an array.");
+      changes.links = value.links;
+    }
+    if (Object.keys(changes).length === 0) {
+      throw new Error("workspace.updateItemMeta needs title, caption or links.");
+    }
+    const item: WorkspaceItem = store.updateWorkspaceItemMeta(pathId, itemId, changes);
+    emit(EVENT_WORKSPACE_CHANGED, { pathId, itemId });
+    return { item };
+  });
+
+  handle("workspace.deleteItem", (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "workspace.deleteItem");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    const itemId = readText(value.itemId, "itemId", { max: 128 });
+    const deleted = store.deleteWorkspaceItem(pathId, itemId);
+    if (deleted) emit(EVENT_WORKSPACE_CHANGED, { pathId, itemId, deleted: true });
+    return { deleted };
+  });
+
   // ---- Child sessions -----------------------------------------------------
 
   /** Build the opening prompt and title before a native chat is created. */
@@ -863,7 +986,13 @@ export function activate(ctx: PluginBackendContext): void {
     if (!node) throw new Error(`Unknown node: ${nodeId}`);
     // This prompt is staged as a visible user message. Never read/pass graph
     // propositions here: private graph context is delivered by get_brief only.
-    const brief = buildChildSessionBrief({ path, nodeId, kind, settings: store.settings() });
+    const brief = buildChildSessionBrief({
+      path,
+      nodeId,
+      kind,
+      settings: store.settings(),
+      workspace: store.workspace(pathId),
+    });
     return {
       pathId: path.id,
       pathTitle: path.title,

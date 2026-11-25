@@ -114,6 +114,7 @@ Because learners and domains vary widely, artifacts are **configurable** (global
 - **Canonical Source Spine:** The primary authoritative textbook(s), university course(s), specification(s), or learner-uploaded corpus that govern the path's conceptual ordering, notation, and section anchors.
 - **Source Anchor:** The specific chapter, lecture, section, or page range in the Canonical Source Spine associated with an individual node (e.g., *OSTEP Ch. 26–27*).
 - **Child Session:** A native LearnHarness **Teaching** or **Practice** chat linked beneath a specific Path Node. Child sessions inherit a tailored brief from their parent node and report progression, errors, and non-stick pivot suggestions back to the Path.
+- **Workspace:** The learner's own per-path material (notes, later artifacts and references), held in a flat, navigational ledger beside the curriculum record. Items carry kind, title, provenance and optional links to nodes; note content is Markdown stored **verbatim** — the learner's editor is the source of truth. The Workspace is inventory, never obligation: no unread counts, no "new" badges, no scheduling semantics. Child sessions see linked items by kind and title only, and read full text through a bounded, chunked tool. Agents may advise, but never create, edit, link or delete learner items.
 
 ### Node Types
 
@@ -146,3 +147,4 @@ Because learners and domains vary widely, artifacts are **configurable** (global
   - **`cue_failure`:** Possessing the knowledge once prompted by name, but failing to recognize its relevance in an unlabelled context.
 - **Watchpoint:** An unresolved Error Ledger entry automatically injected into the agent brief of subsequent or interleaved sessions so the agent can test whether the difficulty has genuinely been overcome.
 - **Advisory Pivot Suggestion:** A non-enforced proposal surfaced when a node genuinely isn't sticking, recommending an optional detour (such as a `bridge`, `skill`, or `contrast` node) that only alters the path if explicitly approved by the learner.
+- **Learner Workspace Link (`grounds` / `informs` / `produced_by`):** The three filing relations a Workspace item can carry toward a node — what an item grounds, informs or was produced by. Filing is learner-owned and ungated: any item may link to any node regardless of progression state.

@@ -17,7 +17,7 @@ import type {
   PluginFrontendContext,
   PluginWidgetHandle,
 } from "learnharness-plugin-api";
-import type { ArtifactType, ChildSessionKind, LearningPath, PathNode, PivotSuggestion, ProgressionState } from "../domain.ts";
+import type { ArtifactType, ChildSessionKind, LearningPath, PathNode, PivotSuggestion, ProgressionState, WorkspaceManifest } from "../domain.ts";
 import { triggerBrowserDownload } from "../export.ts";
 import type { ExportedLearningPath, ExportFormat } from "../export.ts";
 import { createSessionLauncher } from "../session-launcher.ts";
@@ -31,7 +31,7 @@ import {
   formatSourceAnchor,
   recommendedArtifactsFor,
 } from "../domain.ts";
-import { EVENT_ARCHITECT_CHANGED, EVENT_PATHS_CHANGED } from "../topics.ts";
+import { EVENT_ARCHITECT_CHANGED, EVENT_PATHS_CHANGED, EVENT_WORKSPACE_CHANGED } from "../topics.ts";
 import { createArchitectPane } from "./architect-pane.ts";
 import { createPathsOverview } from "./paths-overview.ts";
 import { createNodeInspector } from "./node-inspector.ts";
@@ -40,6 +40,8 @@ import type { ErrorLedgerChange } from "./error-ledger.ts";
 import { pivotDiscussionPrompt } from "./pivot-banner.ts";
 import type { PivotDecision } from "./pivot-banner.ts";
 import { openLinkExistingSessionDialog } from "./session-dialogs.ts";
+import { LEARNER_LINK_REL } from "./workspace-ledger.ts";
+import type { AddNoteInput } from "./workspace-ledger.ts";
 import {
   NODE_TYPE_COLORS,
   NODE_TYPE_LABELS,
@@ -201,6 +203,8 @@ export function mountPathHub(
 
   let summaries: PathSummary[] = [];
   let path: LearningPath | null = null;
+  /** The selected path's workspace manifest, or null before the first item. */
+  let workspace: WorkspaceManifest | null = null;
   let selectedPathId: string | null = null;
   let selectedNodeId: string | null = null;
   /** The learner closed the detailed view; refreshes keep it closed. */
@@ -249,6 +253,18 @@ export function mountPathHub(
     },
     discussPivot(pivot, node) {
       return discussPivot(pivot, node);
+    },
+    saveWorkspaceNote(input) {
+      return saveWorkspaceNote(input);
+    },
+    linkWorkspaceItem(itemId) {
+      return setWorkspaceItemLink(itemId, true);
+    },
+    unlinkWorkspaceItem(itemId) {
+      return setWorkspaceItemLink(itemId, false);
+    },
+    deleteWorkspaceItem(itemId) {
+      return deleteWorkspaceItem(itemId);
     },
   });
 
@@ -405,7 +421,7 @@ export function mountPathHub(
     const node = path ? nodeById(path, selectedNodeId) : null;
     inspectorContainer.hidden = node === null;
     if (node !== null) positionInspector();
-    inspector.render(path, node);
+    inspector.render(path, node, workspace);
   }
 
   function renderHeader(): void {
@@ -467,6 +483,22 @@ export function mountPathHub(
     selectedNodeId = nodeDeselected ? null : path.modules[0]?.nodes[0]?.id ?? null;
   }
 
+  /** The workspace is a refetch-on-change surface like the path itself: the
+   * notification is a hint, the manifest read here is authoritative. */
+  async function refreshWorkspace(token: number, pathId: string): Promise<void> {
+    if (disposed || signal.aborted) return;
+    try {
+      const result = await ctx.call<{ workspace: WorkspaceManifest | null }>("workspace.list", {
+        pathId,
+      });
+      if (!live(token)) return;
+      workspace = result.workspace;
+    } catch {
+      // A missing workspace read must not take the hub down.
+      if (live(token)) workspace = null;
+    }
+  }
+
   async function refreshChatStatuses(token: number, pathId: string): Promise<void> {
     if (disposed || signal.aborted) return;
     try {
@@ -518,9 +550,11 @@ export function mountPathHub(
       path = loaded;
       if (path) {
         await refreshChatStatuses(token, path.id);
+        await refreshWorkspace(token, path.id);
         if (!live(token)) return;
       } else {
         chatStatuses.clear();
+        workspace = null;
       }
       ensureSelection();
       showError(null);
@@ -691,6 +725,63 @@ export function mountPathHub(
     }
   }
 
+  async function saveWorkspaceNote(input: AddNoteInput): Promise<void> {
+    if (disposed || signal.aborted || !path || !selectedNodeId) return;
+    try {
+      await ctx.call("workspace.saveNote", {
+        pathId: path.id,
+        title: input.title,
+        markdown: input.markdown,
+        ...(input.linkToNode ? { nodeId: selectedNodeId } : {}),
+      });
+      if (disposed || signal.aborted) return;
+      showError(null);
+      await refreshAll();
+    } catch (problem) {
+      if (disposed || signal.aborted) return;
+      showError(`Could not save the note: ${problem instanceof Error ? problem.message : String(problem)}`);
+    }
+  }
+
+  /** Learner filing: link or unlink one item to the inspected node. Other links
+   * on the item are preserved exactly as the manifest holds them. */
+  async function setWorkspaceItemLink(itemId: string, linked: boolean): Promise<void> {
+    if (disposed || signal.aborted || !path || !selectedNodeId) return;
+    const item = workspace?.items.find((candidate) => candidate.id === itemId);
+    const links = (item?.links ?? []).filter((link) => link.to !== selectedNodeId);
+    if (linked) links.push({ to: selectedNodeId, rel: LEARNER_LINK_REL });
+    try {
+      await ctx.call("workspace.updateItemMeta", {
+        pathId: path.id,
+        itemId,
+        links,
+      });
+      if (disposed || signal.aborted) return;
+      showError(null);
+      await refreshAll();
+    } catch (problem) {
+      if (disposed || signal.aborted) return;
+      showError(
+        `Could not ${linked ? "link" : "unlink"} the item: ${
+          problem instanceof Error ? problem.message : String(problem)
+        }`,
+      );
+    }
+  }
+
+  async function deleteWorkspaceItem(itemId: string): Promise<void> {
+    if (disposed || signal.aborted || !path) return;
+    try {
+      await ctx.call("workspace.deleteItem", { pathId: path.id, itemId });
+      if (disposed || signal.aborted) return;
+      showError(null);
+      await refreshAll();
+    } catch (problem) {
+      if (disposed || signal.aborted) return;
+      showError(`Could not delete the item: ${problem instanceof Error ? problem.message : String(problem)}`);
+    }
+  }
+
   async function exportCurrentPath(format: ExportFormat): Promise<void> {
     if (disposed || signal.aborted || path === null) return;
     try {
@@ -809,6 +900,10 @@ export function mountPathHub(
     if (event.topic === EVENT_PATHS_CHANGED) {
       const data = event.data as { id?: unknown; created?: unknown } | undefined;
       if (data?.created === true && typeof data.id === "string") createdPathId = data.id;
+      void refreshAll();
+      return;
+    }
+    if (event.topic === EVENT_WORKSPACE_CHANGED) {
       void refreshAll();
       return;
     }

@@ -8,6 +8,7 @@ export const LEARNING_PATH_TOOL_NAMES = [
   "learning_path_update_progress",
   "learning_path_log_error",
   "learning_path_suggest_pivot",
+  "learning_path_read_workspace_item",
 ] as const;
 
 export const GRAPH_SEARCH_TOOL_NAME = "learning_path_search_graph";
