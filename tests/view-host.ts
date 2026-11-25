@@ -826,6 +826,32 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
         workspaceItems.push({ item, content: String(value.markdown) });
         return Promise.resolve({ item: structuredClone(item) } as T);
       }
+      case "workspace.saveSource": {
+        if (String(value.pathId) !== workspacePathId) {
+          return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));
+        }
+        uploaded.push({ name: String(value.name), markdown: String(value.markdown) });
+        const sourceId = `source-${uploaded.length}`;
+        const item: WorkspaceItem = {
+          id: randomUUID(),
+          kind: "source",
+          title: String(value.title ?? value.name),
+          sourceId,
+          addedAt: "2026-02-01T00:00:00.000Z",
+          addedBy: "learner",
+          links: Array.isArray(value.links)
+            ? (structuredClone(value.links) as WorkspaceItem["links"])
+            : [],
+        };
+        // A source item references the global library: no content file.
+        workspaceItems.push({ item, content: null });
+        return Promise.resolve({
+          item: structuredClone(item),
+          reference: { sourceId, name: String(value.name) },
+          deduplicated: false,
+          alreadyFiled: false,
+        } as T);
+      }
       case "workspace.readItem": {
         if (String(value.pathId) !== workspacePathId) {
           return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));

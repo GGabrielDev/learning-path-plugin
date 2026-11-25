@@ -837,3 +837,56 @@ test("paths.export is fenced once activation aborts", async (t) => {
   );
   await h.cleanup();
 });
+
+test("get_learning_path lists node-linked workspace items by title, read through the chunk tool", async (t) => {
+  const h = host(t);
+  await createConversation(h);
+  const savedPath = await h.runTool<ToolResult>("save_learning_path", rawPath());
+  assert.equal(savedPath.isError, undefined, savedPath.details?.error);
+  const pathId = savedPath.details.pathId;
+  const stored = (await h.call<{ path: { modules: { nodes: { id: string; title: string }[] }[] } }>(
+    "paths.get",
+    { id: pathId },
+  )).path;
+  const nodeId = stored.modules[0]!.nodes[0]!.id;
+
+  // A converted document filed mid-path: the manifest references the global
+  // source; the Architect never receives content, only kind/title/sourceId.
+  const filed = await h.call<{ item: { id: string; sourceId: string } }>("workspace.saveSource", {
+    pathId,
+    name: "paper.pdf",
+    markdown: "# A paper\n\nNode-linked document text.",
+    links: [{ to: nodeId, rel: "grounds" }],
+  });
+  await h.call("workspace.saveNote", {
+    pathId,
+    title: "Feynman notes",
+    markdown: "Learner note text.",
+    links: [{ to: nodeId, rel: "informs" }],
+  });
+
+  const outline = await h.runTool<ToolResult>("get_learning_path", { id: pathId });
+  assert.equal(outline.isError, undefined, outline.details?.error);
+  const items = outline.details.path.workspace.items;
+  assert.deepEqual(items, [
+    {
+      kind: "source",
+      title: "paper.pdf",
+      sourceId: filed.item.sourceId,
+      linkedTo: [nodeId],
+    },
+    {
+      kind: "note",
+      title: "Feynman notes",
+      linkedTo: [nodeId],
+    },
+  ], "titles only: no content, no byteSize, no provenance in the outline");
+
+  // Reading a filed document stays on the existing bounded chunk tool.
+  const chunk = await h.runTool<ToolResult>("read_uploaded_source_chunk", {
+    sourceId: filed.item.sourceId,
+  });
+  assert.equal(chunk.isError, undefined);
+  assert.equal(chunk.details.text, "# A paper\n\nNode-linked document text.");
+  assert.equal(chunk.details.nextOffset, null);
+});

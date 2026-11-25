@@ -198,6 +198,18 @@
   overflow-y: auto;
 }
 
+/* A dropped document is filing material: the armed state reads as "you can let
+   go here", not as an inbox or a dropzone decoration. */
+.lp-workspace-body.lp-drop-target {
+  outline: 2px dashed var(--primary, #6366f1);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
+.lp-workspace-source-status {
+  margin: 0;
+}
+
 /* The inspector's one calm affordance for the ledger: room to breathe, one
  * hint line, no inline list. */
 .lp-workspace-open {

@@ -41,7 +41,7 @@ import { pivotDiscussionPrompt } from "./pivot-banner.ts";
 import type { PivotDecision } from "./pivot-banner.ts";
 import { openLinkExistingSessionDialog } from "./session-dialogs.ts";
 import { createWorkspacePane } from "./workspace-pane.ts";
-import type { AddNoteInput } from "./workspace-pane.ts";
+import type { AddNoteInput, AddSourceInput } from "./workspace-pane.ts";
 import type { WorkspaceItemLink } from "../domain.ts";
 import {
   NODE_TYPE_COLORS,
@@ -241,7 +241,11 @@ export function mountPathHub(
   const chatStatuses = new Map<string, SessionStatus>();
   const handles: PluginWidgetHandle<unknown>[] = [];
 
-  const pane = createArchitectPane(ctx, architectContainer, signal);
+  const pane = createArchitectPane(ctx, architectContainer, signal, {
+    // A workspace upload files into the selected path's workspace, linked to
+    // the node in view; without a selection the pane declines with a message.
+    uploadTarget: () => (path === null ? null : { path, nodeId: selectedNodeId }),
+  });
   const launcher = createSessionLauncher(ctx, { host: options.sessionHost });
   const inspector = createNodeInspector(ctx, inspectorContainer, signal, {
     openSession(chatId) {
@@ -281,6 +285,9 @@ export function mountPathHub(
   const workspacePane = createWorkspacePane(ctx, workspaceBody, signal, {
     saveNote(input) {
       return saveWorkspaceNote(input);
+    },
+    saveSource(input) {
+      return saveWorkspaceSource(input);
     },
     setItemLinks(itemId, links) {
       return setWorkspaceItemLinks(itemId, links);
@@ -792,6 +799,26 @@ export function mountPathHub(
     } catch (problem) {
       if (disposed || signal.aborted) return;
       showError(`Could not save the note: ${problem instanceof Error ? problem.message : String(problem)}`);
+    }
+  }
+
+  /** A dropped (or Architect-uploaded) document: one learner write stores it
+   * in the global source library and files the node-linked manifest entry. */
+  async function saveWorkspaceSource(input: AddSourceInput): Promise<void> {
+    if (disposed || signal.aborted || !path) return;
+    try {
+      await ctx.call("workspace.saveSource", {
+        pathId: path.id,
+        name: input.name,
+        markdown: input.markdown,
+        links: [...input.links],
+      });
+      if (disposed || signal.aborted) return;
+      showError(null);
+      await refreshAll();
+    } catch (problem) {
+      if (disposed || signal.aborted) return;
+      showError(`Could not file the document: ${problem instanceof Error ? problem.message : String(problem)}`);
     }
   }
 
