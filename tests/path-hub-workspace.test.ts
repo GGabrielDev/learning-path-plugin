@@ -18,7 +18,7 @@ import type { NativeSessionHost } from "../src/native-session-host.ts";
 import type { WorkspaceManifest } from "../src/domain.ts";
 import { ITEM_ID, makeItem, makePath } from "./fixtures.ts";
 import { createViewFixture, fire, selectRoadmapCard } from "./view-host.ts";
-import type { ViewFixture } from "./view-host.ts";
+import type { MountRecord, ViewFixture } from "./view-host.ts";
 
 function fakeHost(): NativeSessionHost {
   return {
@@ -631,6 +631,135 @@ test("Delete from the pane removes the item through the learner-filing RPC", asy
     assert.match(workspaceBody(fixture.root).textContent ?? "", /No workspace items yet/);
   } finally {
     clearPathHubTarget();
+    fixture.restore();
+  }
+});
+
+/** A drop event carrying files, the way a real DragEvent arrives. */
+function dropEvent(document: Document, files: File[], type: "dragover" | "drop"): Event {
+  const event = document.createEvent("Event");
+  event.initEvent(type, true, true);
+  if (files.length > 0) {
+    Object.defineProperty(event, "dataTransfer", { value: { files } });
+  }
+  return event;
+}
+
+function saveButton(fixture: ViewFixture): MountRecord {
+  const found = fixture
+    .all("mountButton")
+    .find((record) => record.props.label === "Save to Workspace");
+  assert.ok(found, "the filing dialog carries its save button");
+  return found!;
+}
+
+test("dropping a PDF onto the pane converts it and files it as a node-linked source item", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    const root = await mounted(fixture);
+    selectRoadmapCard(root, "n-skill");
+    await openPane(fixture);
+    const body = root.querySelector<HTMLElement>(".lp-workspace-body")!;
+
+    // The pane must allow the drop: dragover is prevented so the browser
+    // delivers it, and the pane shows the armed state while hovering.
+    const over = dropEvent(body.ownerDocument, [], "dragover");
+    body.dispatchEvent(over);
+    assert.equal(over.defaultPrevented, true, "the pane accepts a drop");
+    assert.ok(body.classList.contains("lp-drop-target"), "the armed state is visible");
+
+    const file = new File(["%PDF-1.4 pretend bytes"], "paper.pdf", { type: "application/pdf" });
+    body.dispatchEvent(dropEvent(body.ownerDocument, [file], "drop"));
+    await fixture.flush();
+    assert.ok(!body.classList.contains("lp-drop-target"), "the armed state clears on drop");
+
+    const dialog = fixture.all("openDialog").at(-1)!;
+    assert.match(String(dialog.props.title), /paper\.pdf/, "the filing dialog opens for the dropped file");
+    await fixture.flush();
+    assert.equal(saveButton(fixture).props.disabled, false, "conversion enables the save");
+    assert.equal(fixture.uploaded.length, 0, "no library write before the learner confirms");
+
+    await saveButton(fixture).props.onClick();
+    await fixture.flush();
+    await fixture.flush();
+
+    const call = calls(fixture, "workspace.saveSource").at(-1);
+    assert.deepEqual(call?.input, {
+      pathId: "path-linear-algebra",
+      name: "paper.pdf",
+      markdown: "# paper.pdf\n\nConverted text.",
+      links: [{ to: "n-skill", rel: "grounds" }],
+    }, "the picker's default (the node in view) supplies the grounds link");
+    assert.equal(fixture.uploaded.length, 1, "the document lives once, in the global library");
+
+    // The ledger re-renders with the filed source item.
+    const row = fixture
+      .all("mountButton")
+      .find((record) => record.props.label === "paper.pdf");
+    assert.ok(row, "the ledger lists the filed document");
+    assert.ok(dialog.handle, "the dialog closed after saving");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("a dropped file the converter cannot take surfaces the error and saves nothing", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    const root = await mounted(fixture);
+    selectRoadmapCard(root, "n-skill");
+    await openPane(fixture);
+    const body = root.querySelector<HTMLElement>(".lp-workspace-body")!;
+    fixture.toMarkdown = async () => {
+      throw new Error("Only UTF-8 text or a valid PDF can be converted.");
+    };
+
+    const file = new File(["%PDF-1.4 broken"], "broken.pdf", { type: "application/pdf" });
+    body.dispatchEvent(dropEvent(body.ownerDocument, [file], "drop"));
+    await fixture.flush();
+
+    const error = root.querySelector<HTMLElement>(".lp-dialog-error");
+    assert.ok(error);
+    assert.match(error.textContent ?? "", /Could not convert broken\.pdf/);
+    assert.match(error.textContent ?? "", /Only UTF-8 text or a valid PDF/);
+    assert.equal(saveButton(fixture).props.disabled, true, "a failed conversion never enables the save");
+    assert.equal(fixture.calls.filter((call) => call.name === "workspace.saveSource").length, 0);
+
+    // Closing the dialog is the cancel path: nothing was written.
+    fixture.all("openDialog").at(-1)!.handle.dispose();
+    await fixture.flush();
+    assert.equal(fixture.calls.filter((call) => call.name === "workspace.saveSource").length, 0);
+    assert.equal(fixture.uploaded.length, 0);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("a dropped file type outside the converter is ignored, and cancelling writes nothing", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    const root = await mounted(fixture);
+    selectRoadmapCard(root, "n-skill");
+    await openPane(fixture);
+    const body = root.querySelector<HTMLElement>(".lp-workspace-body")!;
+
+    const image = new File(["png"], "picture.png", { type: "image/png" });
+    body.dispatchEvent(dropEvent(body.ownerDocument, [image], "drop"));
+    await fixture.flush();
+    assert.equal(fixture.all("openDialog").length, 0, "an unconvertible file opens no dialog");
+
+    const file = new File(["# Notes"], "notes.md", { type: "text/markdown" });
+    body.dispatchEvent(dropEvent(body.ownerDocument, [file], "drop"));
+    await fixture.flush();
+    assert.equal(fixture.all("openDialog").length, 1, "a markdown drop opens the filing dialog");
+    fixture.all("openDialog").at(-1)!.handle.dispose();
+    await fixture.flush();
+    assert.equal(fixture.calls.filter((call) => call.name === "workspace.saveSource").length, 0);
+    assert.equal(fixture.uploaded.length, 0, "cancelling files nothing");
+  } finally {
     fixture.restore();
   }
 });

@@ -721,3 +721,82 @@ test("Path Hub disables Export Path when there is no selected path", async () =>
     fixture.restore();
   }
 });
+
+test("Add to workspace converts the document and files it linked grounds to the node in view", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    await mounted(fixture);
+    const button = liveButtons(fixture).find((record) => record.props.label === "Add to workspace");
+    assert.ok(button, "the Architect surface carries the workspace upload affordance");
+
+    await button!.props.onClick();
+    const input = fixture.root.querySelector<HTMLInputElement>('input[type="file"]')!;
+    assert.ok(input, "the affordance opens the shared native file picker");
+    fixture.toMarkdown = async () => ({
+      name: "paper.md",
+      markdown: "# Paper\n\nConverted text.",
+      notices: ["One image-only page was skipped."],
+    });
+    const file = new File(["# Paper"], "paper.md", { type: "text/markdown" });
+    Object.defineProperty(input, "files", { configurable: true, value: { item: () => file } });
+    fire(input, "change");
+    await fixture.flush();
+    await fixture.flush();
+
+    const dialog = fixture.all("openDialog").at(-1)!;
+    assert.match(String(dialog.props.title), /paper\.md/, "the filing dialog names the document");
+    assert.match(
+      fixture.root.textContent ?? "",
+      /One image-only page was skipped/,
+      "conversion notices surface in the dialog, as the sources flow surfaces them",
+    );
+    const save = liveButtons(fixture).find((record) => record.props.label === "Save to Workspace");
+    assert.ok(save);
+    assert.equal(save!.props.disabled, undefined, "conversion enables the save");
+    assert.equal(fixture.uploaded.length, 0, "no library write before the learner confirms");
+
+    await save!.props.onClick();
+    await fixture.flush();
+    await fixture.flush();
+
+    const call = fixture.calls.filter((entry) => entry.name === "workspace.saveSource").at(-1);
+    assert.deepEqual(call?.input, {
+      pathId: "path-linear-algebra",
+      name: "paper.md",
+      markdown: "# Paper\n\nConverted text.",
+      links: [{ to: "n-holistic", rel: "grounds" }],
+    }, "the node in view is the default grounds link; one learner write files everything");
+    assert.equal(fixture.uploaded.length, 1, "the document lives once, in the global library");
+
+    const status = () => fixture.root.querySelector<HTMLElement>(".lp-upload-status")!;
+    assert.match(status().textContent ?? "", /Filed paper\.md in the workspace/);
+    assert.match(status().textContent ?? "", /One image-only page was skipped/);
+    assert.equal(status().dataset.state, "success");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("Add to workspace without a selected path declines in the status line", async () => {
+  const fixture = createViewFixture({});
+  try {
+    await mounted(fixture);
+    const button = liveButtons(fixture).find((record) => record.props.label === "Add to workspace");
+    assert.ok(button, "the affordance stays available so it can explain itself");
+    await button!.props.onClick();
+    const input = fixture.root.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const file = new File(["# Paper"], "paper.md", { type: "text/markdown" });
+    Object.defineProperty(input, "files", { configurable: true, value: { item: () => file } });
+    fire(input, "change");
+    await fixture.flush();
+
+    const status = () => fixture.root.querySelector<HTMLElement>(".lp-upload-status")!;
+    assert.match(status().textContent ?? "", /Select a path first/);
+    assert.equal(status().dataset.state, "error");
+    assert.equal(fixture.calls.filter((entry) => entry.name === "workspace.saveSource").length, 0);
+    assert.equal(fixture.uploaded.length, 0, "declining writes nothing");
+  } finally {
+    fixture.restore();
+  }
+});

@@ -552,7 +552,7 @@ test("the workspace read tool serves bounded UTF-16 windows and the brief lists 
   }
 });
 
-test("the workspace read tool stops for unlinked chats, deletions and file-less items", async () => {
+test("the workspace read tool reads source items from the library, and stops for unlinked chats", async () => {
   const directory = temporaryDirectory();
   const store = openLearningPathStore(directory);
   store.savePath(makePath());
@@ -577,8 +577,13 @@ test("the workspace read tool stops for unlinked chats, deletions and file-less 
     });
     const tools = host.nativeTools("chat-skill", "practice");
     const sourceItem = store.workspace("path-linear-algebra")!.items[0]!;
+    // A filed document reads from the global source library under the same
+    // bounded window as every other kind — the manifest never copies content.
     const source = await runTool(tools, "learning_path_read_workspace_item", { itemId: sourceItem.id });
-    assert.match(source.text, /no readable content file/);
+    assert.equal(source.details.totalCharacters, "source body".length);
+    assert.equal(source.details.text, "source body");
+    assert.equal(source.details.kind, "source");
+    assert.equal(source.details.nextOffset, null);
 
     await host.call("sessions.unlink", {
       pathId: "path-linear-algebra",
