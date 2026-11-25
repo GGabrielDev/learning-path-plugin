@@ -25,6 +25,7 @@ import type {
   PathNode,
   PluginSettings,
   SourceSpine,
+  WorkspaceManifest,
 } from "./domain.ts";
 
 export interface NodeTypeGuide {
@@ -278,6 +279,9 @@ export interface ChildSessionBriefInput {
   readonly nodeId: string;
   readonly kind: ChildSessionKind;
   readonly settings?: PluginSettings | null;
+  /** The path's workspace manifest, when one exists. Linked items enter the
+   * brief by kind and title ONLY; content stays behind the bounded read tool. */
+  readonly workspace?: WorkspaceManifest | null;
   /** Agent-tool delivery only: never pass graph data into a learner-visible opening prompt. */
   readonly graphPropositions?: readonly GraphNode[];
   /** Exclude propositions recorded exclusively in this agent session. */
@@ -383,6 +387,20 @@ export function buildChildSessionBrief(input: ChildSessionBriefInput): ChildSess
     ? graphContextForNode(node, input.graphPropositions ?? [], input.currentChatId)
     : [];
 
+  // Titles only: the brief stays small no matter how much material accumulates,
+  // and learner writing never reaches the model without the bounded read tool.
+  const workspaceItems = (input.workspace?.items ?? []).filter((item) =>
+    item.links.some((link) => link.to === nodeId),
+  );
+  const workspaceLines =
+    workspaceItems.length === 0
+      ? ["No learner workspace material is linked to this node."]
+      : [
+        "The learner filed this material under this node (kind and title only; read an item before referring to it):",
+        ...workspaceItems.map((item) => `- ${item.kind}: ${item.title}`),
+        `Use learning_path_read_workspace_item to read one item in bounded chunks before referring to it.`,
+      ];
+
   const text = [
     "# Learning Path child session brief",
     `You are opening a ${kind} session for one node of the learner's learning path "${path.title}".`,
@@ -401,6 +419,9 @@ export function buildChildSessionBrief(input: ChildSessionBriefInput): ChildSess
     "## Light pre-reading (self-directed, optional)",
     node.lightPreReading ??
       "No pre-reading pointer is set for this node. If orientation would help, suggest one short self-directed skim; never make it a requirement.",
+    "",
+    "## Learner workspace material",
+    ...workspaceLines,
     "",
     "## Loose micro-priming (recommended, never a gate)",
     input.primingHook ?? microPrimingHookFor(node.type),

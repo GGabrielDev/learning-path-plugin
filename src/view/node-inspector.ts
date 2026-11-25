@@ -23,11 +23,14 @@ import type {
   PathNode,
   PivotSuggestion,
   ProgressionState,
+  WorkspaceManifest,
 } from "../domain.ts";
 import type { ChildSessionKind } from "../domain.ts";
 import type { SessionStatus } from "../session-types.ts";
 import { createErrorLedger } from "./error-ledger.ts";
 import type { ErrorLedgerChange } from "./error-ledger.ts";
+import { createWorkspaceLedger } from "./workspace-ledger.ts";
+import type { AddNoteInput, WorkspaceLedger } from "./workspace-ledger.ts";
 import { createPivotBanner } from "./pivot-banner.ts";
 import type { PivotDecision } from "./pivot-banner.ts";
 import {
@@ -60,6 +63,14 @@ export interface NodeInspectorOptions {
   updateNode(change: NodeInspectorChange): void | Promise<void>;
   /** Resolve/unresolve one ledger entry or edit its reflection note. */
   updateError(errorId: string, change: ErrorLedgerChange): void | Promise<void>;
+  /** Save a learner note into the path's workspace (workspace.saveNote). */
+  saveWorkspaceNote(input: AddNoteInput): void | Promise<void>;
+  /** Link one workspace item to the inspected node. */
+  linkWorkspaceItem(itemId: string): void | Promise<void>;
+  /** Remove the inspected node's link from one workspace item. */
+  unlinkWorkspaceItem(itemId: string): void | Promise<void>;
+  /** Delete one workspace item and its content file. */
+  deleteWorkspaceItem(itemId: string): void | Promise<void>;
   /** Accept or dismiss one advisory pivot proposal. */
   decidePivot(pivotId: string, decision: PivotDecision): void | Promise<void>;
   /** Hand a pivot diagnosis to the Architect for discussion. */
@@ -67,7 +78,7 @@ export interface NodeInspectorOptions {
 }
 
 export interface NodeInspector {
-  render(path: LearningPath | null, node: PathNode | null): void;
+  render(path: LearningPath | null, node: PathNode | null, workspace?: WorkspaceManifest | null): void;
   dispose(): void;
 }
 
@@ -116,6 +127,13 @@ export function createNodeInspector(
   const errorLedger = createErrorLedger(ctx, errorContainer, signal, {
     update: options.updateError,
     selectNode: options.selectNode,
+  });
+  const workspaceContainer = element(document, "div", "lp-workspace-host");
+  const workspaceLedger = createWorkspaceLedger(ctx, workspaceContainer, signal, {
+    saveNote: options.saveWorkspaceNote,
+    linkItem: options.linkWorkspaceItem,
+    unlinkItem: options.unlinkWorkspaceItem,
+    deleteItem: options.deleteWorkspaceItem,
   });
 
   let handles: PluginWidgetHandle<unknown>[] = [];
@@ -175,7 +193,7 @@ export function createNodeInspector(
     return wrapper;
   };
 
-  const renderSelected = (path: LearningPath, node: PathNode): void => {
+  const renderSelected = (path: LearningPath, node: PathNode, workspaceManifest: WorkspaceManifest | null): void => {
     root.dataset.nodeId = node.id;
 
     const header = element(document, "header", "lp-inspector-header");
@@ -406,10 +424,14 @@ export function createNodeInspector(
       }
       chats.append(list);
     }
+
+    const workspace = section("Workspace");
+    workspace.append(workspaceContainer);
+    workspaceLedger.render(path, node, workspaceManifest);
   };
 
   return {
-    render(path, node) {
+    render(path, node, workspaceManifest = null) {
       if (disposed || signal.aborted) return;
       clear();
       root.removeAttribute("data-node-id");
@@ -417,9 +439,10 @@ export function createNodeInspector(
         empty();
         pivotBanner.render(null, null);
         errorLedger.render(null, null);
+        workspaceLedger.render(null, null, null);
         return;
       }
-      renderSelected(path, node);
+      renderSelected(path, node, workspaceManifest);
     },
     dispose() {
       if (disposed) return;
@@ -427,6 +450,7 @@ export function createNodeInspector(
       clear();
       pivotBanner.dispose();
       errorLedger.dispose();
+      workspaceLedger.dispose();
       root.remove();
     },
   };

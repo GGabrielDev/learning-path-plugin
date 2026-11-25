@@ -29,7 +29,7 @@ import type {
   PluginUiContent,
   PluginView,
 } from "learnharness-plugin-api";
-import type { ChildSessionKind, ChildSessionLink, LearningPath, PluginSettings, ProgressionState } from "../src/domain.ts";
+import type { ChildSessionKind, ChildSessionLink, LearningPath, PluginSettings, ProgressionState, WorkspaceItem, WorkspaceManifest } from "../src/domain.ts";
 import { exportLearningPath } from "../src/export.ts";
 import { buildChildSessionBrief } from "../src/framework.ts";
 import { resolvePivotSuggestion, updateErrorEntry } from "../src/session-links.ts";
@@ -210,6 +210,8 @@ export interface FixtureOptions {
   conversations?: readonly PluginAgentSnapshot[];
   nativeChats?: readonly NativeChatFixture[];
   settings?: PluginSettings;
+  /** Initial workspace items for the first fixture path, content verbatim. */
+  workspaceItems?: readonly { item: WorkspaceItem; content: string }[];
 }
 
 export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
@@ -233,6 +235,12 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
   const paths = new Map<string, LearningPath>();
   for (const path of options.paths ?? []) paths.set(path.id, structuredClone(path));
   let settingsState: PluginSettings = options.settings ?? { artifactDefaults: {} };
+  // The in-memory workspace of the first fixture path: manifest rows plus the
+  // content each row's file carries, mirroring the store's index/files split.
+  const workspacePathId = options.paths?.[0]?.id ?? null;
+  const workspaceItems: { item: WorkspaceItem; content: string | null }[] = (
+    options.workspaceItems ?? []
+  ).map((entry) => structuredClone(entry));
   // A fixture path normally points at live chats; tests delete one to model a
   // deleted native session instead of every fixture starting "missing".
   for (const path of paths.values()) {
@@ -778,6 +786,67 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
           reference: { sourceId: `source-${uploaded.length}`, name: value.name },
           deduplicated: false,
         } as T);
+      }
+      case "workspace.list": {
+        if (String(value.pathId) !== workspacePathId) {
+          return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));
+        }
+        const manifest: WorkspaceManifest | null =
+          workspaceItems.length === 0
+            ? null
+            : {
+                schemaVersion: 1,
+                pathId: workspacePathId!,
+                updatedAt: "2026-02-01T00:00:00.000Z",
+                items: workspaceItems.map((entry) => structuredClone(entry.item)),
+              };
+        return Promise.resolve({ workspace: manifest } as T);
+      }
+      case "workspace.saveNote": {
+        if (String(value.pathId) !== workspacePathId) {
+          return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));
+        }
+        const item: WorkspaceItem = {
+          id: randomUUID(),
+          kind: "note",
+          title: String(value.title),
+          addedAt: "2026-02-01T00:00:00.000Z",
+          addedBy: "learner",
+          links:
+            value.nodeId === undefined || value.nodeId === null
+              ? []
+              : [
+                  {
+                    to: String(value.nodeId),
+                    rel: String(value.rel ?? "informs") as WorkspaceItem["links"][number]["rel"],
+                  },
+                ],
+        };
+        workspaceItems.push({ item, content: String(value.markdown) });
+        return Promise.resolve({ item: structuredClone(item) } as T);
+      }
+      case "workspace.updateItemMeta": {
+        const index = workspaceItems.findIndex((entry) => entry.item.id === String(value.itemId));
+        if (index === -1) {
+          return Promise.reject(new Error(`Unknown workspace item: ${String(value.itemId)}`));
+        }
+        const current = structuredClone(workspaceItems[index]!.item);
+        const { caption: previousCaption, ...kept } = current;
+        const updated: WorkspaceItem = {
+          ...kept,
+          ...(value.title === undefined ? {} : { title: String(value.title) }),
+          ...(value.caption === undefined || value.caption === null
+            ? {}
+            : { caption: String(value.caption) }),
+          ...(value.links === undefined ? {} : { links: structuredClone(value.links) }),
+        };
+        workspaceItems[index] = { item: updated, content: workspaceItems[index]!.content };
+        return Promise.resolve({ item: structuredClone(updated) } as T);
+      }
+      case "workspace.deleteItem": {
+        const index = workspaceItems.findIndex((entry) => entry.item.id === String(value.itemId));
+        if (index !== -1) workspaceItems.splice(index, 1);
+        return Promise.resolve({ deleted: index !== -1 } as T);
       }
       default:
         return Promise.reject(new Error(`Unexpected operation: ${name}`));

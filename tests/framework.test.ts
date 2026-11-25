@@ -14,7 +14,7 @@ import {
   microPrimingHookFor,
   resolveNodeArtifact,
 } from "../src/framework.ts";
-import { makePath } from "./fixtures.ts";
+import { ITEM_ID, ITEM_ID_2, ITEM_ID_3, makeItem, makeManifest, makePath } from "./fixtures.ts";
 
 /** FRAMEWORK.md principle 7: no pacing, calendar or gamified pressure language. */
 const PACING =
@@ -97,6 +97,40 @@ test("artifact resolution prefers the node, then the path, settings and catalog"
 
   const bridge = nodeOf(path, "n-bridge");
   assert.deepEqual(resolveNodeArtifact(noPathDefault, bridge, null), { type: "encoding_exercise" });
+});
+
+test("the brief lists learner workspace material by kind and title only", () => {
+  const path = makePath();
+  const workspace = makeManifest({
+    items: [
+      makeItem({ links: [{ to: "n-contrast", rel: "informs" }] }),
+      makeItem({
+        id: ITEM_ID_2,
+        kind: "code",
+        title: "Vector space sketch",
+        links: [{ to: "n-contrast", rel: "produced_by" }],
+      }),
+      makeItem({ id: ITEM_ID_3, title: "Unlinked margin note", links: [] }),
+    ],
+  });
+
+  const brief = buildChildSessionBrief({ path, nodeId: "n-contrast", kind: "teaching", workspace });
+  assert.match(brief.text, /## Learner workspace material/);
+  assert.match(brief.text, /- note: Feynman notes on vector spaces/);
+  assert.match(brief.text, /- code: Vector space sketch/);
+  assert.doesNotMatch(brief.text, /Unlinked margin note/, "only items linked to this node are listed");
+  assert.match(brief.text, /learning_path_read_workspace_item/);
+  assert.doesNotMatch(brief.text, /\bunread\b/);
+
+  // Titles only, never content: the brief carries no item bodies and no ids.
+  const section = brief.text.split("## Learner workspace material")[1]!.split("##")[0]!;
+  assert.doesNotMatch(section, new RegExp(ITEM_ID), "item ids stay out of the brief");
+  assert.doesNotMatch(section, /grounds|produced_by/, "link relations are not brief material");
+
+  const none = buildChildSessionBrief({ path, nodeId: "n-holistic", kind: "teaching", workspace });
+  assert.match(none.text, /No learner workspace material is linked to this node\./);
+  const noManifest = buildChildSessionBrief({ path, nodeId: "n-holistic", kind: "teaching" });
+  assert.match(noManifest.text, /No learner workspace material is linked to this node\./);
 });
 
 test("a child brief carries the anchor, pre-reading, priming, interleaving and watchpoints", () => {
