@@ -1,8 +1,9 @@
 # Path workspaces: the manifest and the ledger (brainstorm → plan)
 
-Status: planned. Queued as four changes (`workspace 1/4` … `4/4`) branching from
-`feat/ui-upgrades`. Phase 5 (images, advisory linking) is deliberately deferred
-until 1–4 have landed.
+Status: implemented on `feat/workspaces` and merged into `experimental`: phases
+1–4 in sequence, plus a live-review rework after phase 2 that moved the ledger
+into a floating pane with lazy reads and multi-node linking. Phase 5 (images,
+advisory linking, OS-folder reveal) remains deferred until a need shows.
 
 ## The question
 
