@@ -264,7 +264,7 @@ diagnosis; only the learner can accept it. Dismissing it changes nothing.
 | `src/export.ts` | Deterministic JSON/Markdown path exports and browser download |
 | `src/architect-agent.ts` | Persistent Path Architect definition and server tools |
 | `src/backend.ts` | RPC handlers, events, native bridge and activation lifecycle |
-| `src/view/path-hub.ts` | Path Hub: header, tree, Architect pane, Node Inspector |
+| `src/view/path-hub.ts` | Path Hub: header, roadmap lanes, Architect pane, Node Inspector |
 | `src/view/*` | Architect chat, inspector, error ledger, pivots, dialogs, tool cards |
 | `src/settings.ts` | Artifact defaults, graph-tutoring opt-in, Architect model, safe path deletion |
 | `src/graph-context.ts` | Bounded read-only proposition matching and shared graph-tutoring rules |
@@ -281,6 +281,19 @@ node --test tests/lifecycle.test.ts   # one file
 npm run typecheck                     # tsc --noEmit, strict mode
 npm run build
 ```
+
+For manual Knowledge Graph and graph-informed tutoring tests, seed the
+synthetic Velora fixture into a **dev/scratch data directory** (never your real
+one — the seed script requires an explicit `--data-dir` and refuses the real
+data directory without `--allow-real-data`):
+
+```sh
+npm run seed:graph -- --data-dir /path/to/dev/data
+npm run unseed:graph -- --data-dir /path/to/dev/data
+```
+
+See [`fixtures/velora/README.md`](./fixtures/velora/README.md)
+for the dataset, the expected matches and the branch/install steps.
 
 The plugin only imports types from the LearnHarness plugin API, so building
 and testing need nothing beyond `npm ci`. Typechecking needs those types, which

@@ -2,9 +2,8 @@
  *
  * One plugin view with four cooperating surfaces:
  * - a header bar with path switcher, Create a Path, Refine Path and progress;
- * - the path pane: a recorded-structure graph (module clusters, node cards and
- *   only `interleavesNodeIds` edges) with the module-lane roadmap as the
- *   alternate lens;
+ * - the path pane: the module-lane roadmap (one lane per module, node cards,
+ *   no arrows, dates or order pressure);
  * - the Architect chat pane (`mountStandardComposer` + `mountMarkdown`);
  * - the Node Inspector (pre-reading, artifact justification, progression and
  *   child-chat actions).
@@ -81,36 +80,6 @@ interface PathResult {
   readonly path: LearningPath | null;
 }
 
-const SVG_NS = "http://www.w3.org/2000/svg";
-
-/** Fallback card geometry for hosts without layout (tests) or before first
- * paint. Real browsers are measured; this keeps the edge layer deterministic. */
-const FALLBACK_COLUMN_WIDTH = 320;
-const FALLBACK_CARD_WIDTH = 280;
-const FALLBACK_CARD_HEIGHT = 96;
-const FALLBACK_CARD_GAP = 16;
-const FALLBACK_HEADER_HEIGHT = 84;
-const FALLBACK_PADDING = 12;
-
-interface GraphEdge {
-  readonly from: string;
-  readonly to: string;
-}
-
-interface NodePlacement {
-  readonly moduleIndex: number;
-  readonly nodeIndex: number;
-}
-
-interface CardBox {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-  readonly moduleIndex: number;
-  readonly nodeIndex: number;
-}
-
 function element<K extends keyof HTMLElementTagNameMap>(
   document: Document,
   tag: K,
@@ -182,8 +151,7 @@ export function mountPathHub(
   const createHost = element(document, "span", "lp-button-host");
   const refineHost = element(document, "span", "lp-button-host");
   const exportHost = element(document, "span", "lp-button-host");
-  const viewHost = element(document, "span", "lp-button-host");
-  headerActions.append(createHost, refineHost, exportHost, viewHost);
+  headerActions.append(createHost, refineHost, exportHost);
   const summary = element(document, "p", "lp-progress-summary");
   summary.setAttribute("aria-live", "polite");
   headerActions.append(summary);
@@ -199,13 +167,12 @@ export function mountPathHub(
   const overviewContainer = element(document, "section", "lp-overview-pane");
   overviewContainer.setAttribute("aria-label", "Paths overview");
   root.append(overviewContainer);
-  // The host tree widget is gone: this pane now holds the recorded-structure
-  // graph (default) or the module-lane roadmap (alternate lens).
+  // The host tree widget is gone: this pane holds the module-lane roadmap, the
+  // one lens over the recorded structure.
   const pathPane = element(document, "section", "lp-path-pane");
-  pathPane.setAttribute("aria-label", "Path graph");
-  const paneTitle = element(document, "h2", "lp-pane-title", "Path graph");
+  pathPane.setAttribute("aria-label", "Path roadmap");
+  const paneTitle = element(document, "h2", "lp-pane-title", "Path roadmap");
   pathPane.append(paneTitle);
-  const graphHost = element(document, "div", "lp-graph-host");
   const roadmapHost = element(document, "div", "lp-roadmap-host");
   roadmapHost.hidden = true;
   const pathEmpty = element(
@@ -214,14 +181,14 @@ export function mountPathHub(
     "lp-empty-state",
     "No learning paths yet. Use Create a Path to talk to the Architect.",
   );
-  pathPane.append(graphHost, roadmapHost, pathEmpty);
+  pathPane.append(roadmapHost, pathEmpty);
   const architectContainer = element(document, "div", "lp-architect-pane");
   body.append(pathPane, architectContainer);
   root.append(body);
 
-  // The detailed view floats above the hub instead of taking a grid column:
-  // the path graph/roadmap pane and the Architect conversation keep full
-  // width, and the inspector opens on node selection and closes on demand.
+  // The detailed view floats over the hub's right half, hanging under the
+  // header: the roadmap and the Architect conversation keep their width, and
+  // the inspector opens on node selection and closes on demand.
   const inspectorContainer = element(document, "aside", "lp-inspector-pane");
   inspectorContainer.setAttribute("aria-label", "Node details");
   inspectorContainer.hidden = true;
@@ -247,12 +214,8 @@ export function mountPathHub(
   let loadToken = 0;
   let disposed = false;
   let startingSession = false;
-  /** The learner's lens over one path: recorded-structure graph or module lanes. */
-  let viewMode: "graph" | "roadmap" = "graph";
-  /** Badge handles owned by the current graph/roadmap render; cleared per render. */
+  /** Badge handles owned by the current roadmap render; cleared per render. */
   let cardHandles: PluginWidgetHandle<unknown>[] = [];
-  /** Repositions the current graph edge layer after a host resize. */
-  let edgeLayout: (() => void) | null = null;
   const chatStatuses = new Map<string, SessionStatus>();
   const handles: PluginWidgetHandle<unknown>[] = [];
 
@@ -311,11 +274,8 @@ export function mountPathHub(
   function applySelection(): void {
     for (const card of root.querySelectorAll<HTMLElement>(".lp-node-card")) {
       const isSelected = selectedNodeId !== null && card.dataset.nodeId === selectedNodeId;
-      const selectedClass = card.classList.contains("lp-graph-card")
-        ? "lp-graph-card-selected"
-        : "lp-roadmap-card-selected";
       card.classList.toggle("lp-node-card-selected", isSelected);
-      card.classList.toggle(selectedClass, isSelected);
+      card.classList.toggle("lp-roadmap-card-selected", isSelected);
       card.setAttribute("aria-pressed", isSelected ? "true" : "false");
     }
   }
@@ -330,28 +290,23 @@ export function mountPathHub(
     renderInspector();
   }
 
-  /** Dispose every card badge and both view hosts. Called on each render and on
-   * mount teardown, so no badge handle or DOM outlives the data it showed. */
+  /** Dispose every card badge and the roadmap host. Called on each render and
+   * on mount teardown, so no badge handle or DOM outlives the data it showed. */
   function disposeCards(): void {
     for (const handle of cardHandles.reverse()) handle.dispose();
     cardHandles = [];
-    edgeLayout = null;
-    graphHost.replaceChildren();
     roadmapHost.replaceChildren();
   }
 
-  /** One card pattern for both lenses: real button, badges, anchor, selection. */
-  function nodeCard(node: PathNode, kind: "graph" | "roadmap"): HTMLElement {
+  /** One card pattern for the lanes: real button, badges, anchor, selection. */
+  function nodeCard(node: PathNode): HTMLElement {
     const card = document.createElement("button");
     card.setAttribute("type", "button");
     card.dataset.nodeId = node.id;
     const selected = node.id === selectedNodeId;
-    const classes = ["lp-node-card", kind === "graph" ? "lp-graph-card" : "lp-roadmap-card"];
+    const classes = ["lp-node-card", "lp-roadmap-card"];
     if (selected) {
-      classes.push(
-        "lp-node-card-selected",
-        kind === "graph" ? "lp-graph-card-selected" : "lp-roadmap-card-selected",
-      );
+      classes.push("lp-node-card-selected", "lp-roadmap-card-selected");
     }
     card.className = classes.join(" ");
     card.setAttribute("aria-pressed", selected ? "true" : "false");
@@ -400,188 +355,8 @@ export function mountPathHub(
     return card;
   }
 
-  /** Every recorded interleaving link, read in one direction: a node's
-   * `interleavesNodeIds` lists the prior nodes it builds on. This is the only
-   * edge source; the graph never infers a prerequisite. */
-  function recordedEdges(pathValue: LearningPath): GraphEdge[] {
-    const seen = new Set<string>();
-    const edges: GraphEdge[] = [];
-    for (const module of pathValue.modules) {
-      for (const node of module.nodes) {
-        for (const from of node.interleavesNodeIds) {
-          if (from === node.id) continue;
-          const key = `${from}\u0000${node.id}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          edges.push({ from, to: node.id });
-        }
-      }
-    }
-    return edges;
-  }
-
-  const round = (value: number): string => String(Math.round(value * 10) / 10);
-
-  function edgePath(from: CardBox, to: CardBox): string {
-    if (from.moduleIndex === to.moduleIndex) {
-      // Cards in one cluster are stacked: link the nearest horizontal edges.
-      const downward = from.nodeIndex < to.nodeIndex;
-      const startX = from.x + from.width / 2;
-      const startY = downward ? from.y + from.height : from.y;
-      const endX = to.x + to.width / 2;
-      const endY = downward ? to.y : to.y + to.height;
-      const bend = Math.max(18, Math.abs(endY - startY) / 2);
-      const control1 = downward ? startY + bend : startY - bend;
-      const control2 = downward ? endY - bend : endY + bend;
-      return `M ${round(startX)} ${round(startY)} C ${round(startX)} ${round(control1)}, ${round(endX)} ${round(control2)}, ${round(endX)} ${round(endY)}`;
-    }
-    // Cards in different clusters are columns side by side.
-    const forward = to.x >= from.x;
-    const startX = forward ? from.x + from.width : from.x;
-    const endX = forward ? to.x : to.x + to.width;
-    const startY = from.y + from.height / 2;
-    const endY = to.y + to.height / 2;
-    const bend = Math.max(32, Math.abs(endX - startX) / 2);
-    const control1 = startX + (forward ? bend : -bend);
-    const control2 = endX - (forward ? bend : -bend);
-    return `M ${round(startX)} ${round(startY)} C ${round(control1)} ${round(startY)}, ${round(control2)} ${round(endY)}, ${round(endX)} ${round(endY)}`;
-  }
-
-  /** A decorative SVG layer over the cards. Hidden from assistive tech: the
-   * inspector's "Interleaved prior nodes" list is the accessible record. */
-  function edgeLayer(
-    board: HTMLElement,
-    cards: ReadonlyMap<string, HTMLElement>,
-    placement: ReadonlyMap<string, NodePlacement>,
-    edges: readonly GraphEdge[],
-  ): SVGSVGElement {
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("class", "lp-graph-edges");
-    svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("focusable", "false");
-    svg.setAttribute("role", "presentation");
-    const paths = edges.map((edge) => {
-      const pathElement = document.createElementNS(SVG_NS, "path");
-      pathElement.setAttribute("class", "lp-graph-edge");
-      pathElement.setAttribute("data-edge-from", edge.from);
-      pathElement.setAttribute("data-edge-to", edge.to);
-      pathElement.setAttribute("data-from", edge.from);
-      pathElement.setAttribute("data-to", edge.to);
-      svg.append(pathElement);
-      return pathElement;
-    });
-
-    const reposition = (): void => {
-      if (disposed || signal.aborted) return;
-      const boardRect = board.getBoundingClientRect();
-      const boxes = new Map<string, CardBox>();
-      let measured = boardRect.width > 0 && boardRect.height > 0;
-      let maxRight = 0;
-      let maxBottom = 0;
-      for (const [nodeId, card] of cards) {
-        const place = placement.get(nodeId);
-        if (!place) continue;
-        const rect = card.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) measured = false;
-        const box: CardBox = {
-          x: rect.left - boardRect.left,
-          y: rect.top - boardRect.top,
-          width: rect.width,
-          height: rect.height,
-          moduleIndex: place.moduleIndex,
-          nodeIndex: place.nodeIndex,
-        };
-        boxes.set(nodeId, box);
-        maxRight = Math.max(maxRight, box.x + box.width);
-        maxBottom = Math.max(maxBottom, box.y + box.height);
-      }
-
-      let width = Math.max(boardRect.width, board.scrollWidth, maxRight + FALLBACK_PADDING);
-      let height = Math.max(boardRect.height, board.scrollHeight, maxBottom + FALLBACK_PADDING);
-      if (!measured) {
-        // No layout engine (tests) or before first paint: deterministic columns.
-        let moduleCount = 1;
-        let rowCount = 1;
-        for (const place of placement.values()) {
-          moduleCount = Math.max(moduleCount, place.moduleIndex + 1);
-          rowCount = Math.max(rowCount, place.nodeIndex + 1);
-        }
-        for (const [nodeId, place] of placement) {
-          boxes.set(nodeId, {
-            x: FALLBACK_PADDING + place.moduleIndex * FALLBACK_COLUMN_WIDTH,
-            y: FALLBACK_HEADER_HEIGHT + place.nodeIndex * (FALLBACK_CARD_HEIGHT + FALLBACK_CARD_GAP),
-            width: FALLBACK_CARD_WIDTH,
-            height: FALLBACK_CARD_HEIGHT,
-            moduleIndex: place.moduleIndex,
-            nodeIndex: place.nodeIndex,
-          });
-        }
-        width = FALLBACK_PADDING * 2 + moduleCount * FALLBACK_COLUMN_WIDTH;
-        height =
-          FALLBACK_HEADER_HEIGHT + rowCount * (FALLBACK_CARD_HEIGHT + FALLBACK_CARD_GAP) + FALLBACK_PADDING;
-      }
-      svg.setAttribute("width", String(Math.ceil(Math.max(1, width))));
-      svg.setAttribute("height", String(Math.ceil(Math.max(1, height))));
-      edges.forEach((edge, index) => {
-        const pathElement = paths[index];
-        const from = boxes.get(edge.from);
-        const to = boxes.get(edge.to);
-        if (!pathElement || !from || !to) return;
-        pathElement.setAttribute("d", edgePath(from, to));
-      });
-    };
-
-    edgeLayout = reposition;
-    reposition();
-    const view = document.defaultView;
-    if (view && typeof view.requestAnimationFrame === "function") {
-      view.requestAnimationFrame(() => {
-        if (edgeLayout === reposition) reposition();
-      });
-    }
-    return svg;
-  }
-
-  /** Modules are clusters (columns), nodes are buttons, and the only lines are
-   * the recorded interleaving links. Order follows the record; nothing moves on
-   * its own. */
-  function buildGraph(): void {
-    if (!path) return;
-    const board = element(document, "div", "lp-graph");
-    const cards = new Map<string, HTMLElement>();
-    const placement = new Map<string, NodePlacement>();
-    path.modules.forEach((module, moduleIndex) => {
-      const cluster = element(document, "section", "lp-graph-cluster");
-      cluster.setAttribute("aria-label", module.title);
-      const clusterHeader = element(document, "div", "lp-graph-cluster-header");
-      clusterHeader.append(element(document, "h3", "lp-graph-cluster-title", module.title));
-      const consolidated = module.nodes.filter((node) => node.progression === "consolidated").length;
-      clusterHeader.append(
-        element(document, "span", "lp-muted", `${consolidated}/${module.nodes.length} consolidated`),
-      );
-      cluster.append(clusterHeader);
-      const cardList = element(document, "div", "lp-graph-cards");
-      module.nodes.forEach((node, nodeIndex) => {
-        const card = nodeCard(node, "graph");
-        card.dataset.moduleIndex = String(moduleIndex);
-        cards.set(node.id, card);
-        placement.set(node.id, { moduleIndex, nodeIndex });
-        cardList.append(card);
-      });
-      cluster.append(cardList);
-      board.append(cluster);
-    });
-    graphHost.append(board);
-    const edges = recordedEdges(path).filter(
-      (edge) => cards.has(edge.from) && cards.has(edge.to),
-    );
-    if (edges.length > 0) {
-      board.append(edgeLayer(board, cards, placement, edges));
-    }
-  }
-
-  /** Module lanes with node cards: the alternate flat lens over the same record.
-   * No arrows, no dates, no order pressure. */
+  /** Module lanes with node cards: the one flat lens over the recorded
+   * structure. No arrows, no dates, no order pressure. */
   function buildRoadmap(): void {
     if (!path) return;
     const board = element(document, "div", "lp-roadmap");
@@ -598,7 +373,7 @@ export function mountPathHub(
       lane.append(laneHeader);
       const cards = element(document, "div", "lp-lane-cards");
       for (const node of module.nodes) {
-        cards.append(nodeCard(node, "roadmap"));
+        cards.append(nodeCard(node));
       }
       lane.append(cards);
       board.append(lane);
@@ -608,22 +383,28 @@ export function mountPathHub(
 
   function renderPathView(): void {
     if (disposed || signal.aborted) return;
-    const roadmap = viewMode === "roadmap" && path !== null && path.modules.length >= 2;
-    paneTitle.textContent = roadmap ? "Path roadmap" : "Path graph";
-    pathPane.setAttribute("aria-label", roadmap ? "Path roadmap" : "Path graph");
+    paneTitle.textContent = "Path roadmap";
+    pathPane.setAttribute("aria-label", "Path roadmap");
     pathEmpty.hidden = path !== null;
-    graphHost.hidden = path === null || roadmap;
-    roadmapHost.hidden = path === null || !roadmap;
+    roadmapHost.hidden = path === null;
     disposeCards();
     if (path === null) return;
-    if (roadmap) buildRoadmap();
-    else buildGraph();
+    buildRoadmap();
+  }
+
+  /** Hang the floating window directly under the header — never over it —
+   * whatever the header's current wrapped height. The hub root is the
+   * positioned ancestor (see `.lp-hub`), so this is a layout offset, not a
+   * viewport one: the window never covers the host's top bar either. */
+  function positionInspector(): void {
+    inspectorContainer.style.top = `${header.offsetTop + header.offsetHeight + 12}px`;
   }
 
   function renderInspector(): void {
     if (disposed || signal.aborted) return;
     const node = path ? nodeById(path, selectedNodeId) : null;
     inspectorContainer.hidden = node === null;
+    if (node !== null) positionInspector();
     inspector.render(path, node);
   }
 
@@ -659,15 +440,9 @@ export function mountPathHub(
       variant: refineOpen ? "secondary" : "outline",
     });
     exportButton.update({ disabled: path === null });
-    const multiModule = path !== null && path.modules.length >= 2;
-    viewHost.hidden = !multiModule;
-    viewModeButton.update({
-      label: viewMode === "graph" ? "Roadmap view" : "Graph view",
-      variant: viewMode === "graph" ? "outline" : "secondary",
-    });
     // Keep the Architect visible while there is no path yet: that is how one is made.
     architectContainer.hidden = !refineOpen && summaries.length > 0;
-    // With the Architect pane closed, the path graph/roadmap owns the whole
+    // With the Architect pane closed, the path roadmap owns the whole
     // section instead of an empty second grid column.
     body.classList.toggle("lp-hub-body-single", architectContainer.hidden);
   }
@@ -1024,23 +799,6 @@ export function mountPathHub(
   );
   handles.push(inspectorCloseButton);
 
-  const viewModeButton = ctx.ui.mountButton(
-    viewHost,
-    {
-      label: "Roadmap view",
-      variant: "outline",
-      size: "sm",
-      onClick: () => {
-        if (signal.aborted || disposed) return;
-        viewMode = viewMode === "graph" ? "roadmap" : "graph";
-        renderHeader();
-        renderPathView();
-      },
-    },
-    { signal },
-  );
-  handles.push(viewModeButton);
-
   pathSelect.addEventListener("change", () => {
     if (signal.aborted || disposed) return;
     void selectPath(pathSelect.value);
@@ -1084,8 +842,10 @@ export function mountPathHub(
     if (id) void pane.load(id);
   });
 
+  // A host resize can rewrap the header (its height changes with the goal
+  // text), so the floating window re-hangs under it instead of drifting over.
   const onViewResize = (): void => {
-    if (!disposed && !signal.aborted) edgeLayout?.();
+    if (!disposed && !signal.aborted && !inspectorContainer.hidden) positionInspector();
   };
   const defaultView = document.defaultView;
   if (defaultView) defaultView.addEventListener("resize", onViewResize);
