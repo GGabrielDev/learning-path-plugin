@@ -283,8 +283,16 @@ npm run build
 ```
 
 For manual Knowledge Graph and graph-informed tutoring tests, seed the
-synthetic Velora fixture with `npm run seed:graph` and remove it with
-`npm run unseed:graph`. See [`fixtures/velora/README.md`](./fixtures/velora/README.md)
+synthetic Velora fixture into a **dev/scratch data directory** (never your real
+one — the seed script requires an explicit `--data-dir` and refuses the real
+data directory without `--allow-real-data`):
+
+```sh
+npm run seed:graph -- --data-dir /path/to/dev/data
+npm run unseed:graph -- --data-dir /path/to/dev/data
+```
+
+See [`fixtures/velora/README.md`](./fixtures/velora/README.md)
 for the dataset, the expected matches and the branch/install steps.
 
 The plugin only imports types from the LearnHarness plugin API, so building

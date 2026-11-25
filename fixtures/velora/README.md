@@ -26,30 +26,29 @@ retrieval is eligible from any linked teaching/practice chat.
 
 ## Seed it
 
-The script defaults to the LearnHarness data directory for this OS and backs up
-every file it may change.
+The script never guesses a data directory: `--data-dir` is required and must
+name a **dev/scratch** LearnHarness data directory, not your real one. It
+refuses to seed the OS-default real data directory unless `--allow-real-data`
+is passed. It backs up every file it may change.
 
 ```sh
 # Preview first.
-node scripts/seed-graph-fixture.mjs --dry-run --with-path
+node scripts/seed-graph-fixture.mjs --dry-run --with-path \
+  --data-dir /path/to/dev/data
 
 # Seed the graph and the matching Learning Path.
-npm run seed:graph
-
-# Equivalent explicit form.
-node scripts/seed-graph-fixture.mjs \
-  --data-dir ~/.config/LearnHarness/data \
-  --with-path
+npm run seed:graph -- --data-dir /path/to/dev/data
 ```
 
 Seeding is append-only and idempotent: existing ledger lines and sources are
 preserved, and running it again adds nothing. Backups land in
 `<data-dir>/backups/velora-seed-<timestamp>/`.
 
-To remove only the fixture records again:
+To remove only the fixture records again (fixture-scoped; no
+`--allow-real-data` needed):
 
 ```sh
-npm run unseed:graph
+npm run unseed:graph -- --data-dir /path/to/dev/data
 ```
 
 The remove path refuses to delete a proposition that has gained provenance

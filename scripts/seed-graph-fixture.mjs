@@ -13,14 +13,15 @@
  * Nothing here writes a chat, transcript or model output. The data is invented.
  *
  * Examples:
- *   node scripts/seed-graph-fixture.mjs --dry-run
- *   node scripts/seed-graph-fixture.mjs --data-dir ~/.config/LearnHarness/data --with-path
- *   node scripts/seed-graph-fixture.mjs --data-dir ~/.config/LearnHarness/data --remove
+ *   node scripts/seed-graph-fixture.mjs --data-dir <dev-data-dir> --dry-run
+ *   node scripts/seed-graph-fixture.mjs --data-dir <dev-data-dir> --with-path
+ *   node scripts/seed-graph-fixture.mjs --data-dir <dev-data-dir> --remove
  *
  * `--data-dir` is the LearnHarness data directory (the one containing
- * `graph/` and `plugins/`). On Linux it defaults to
- * `<config>/LearnHarness/data`; on macOS to
- * `~/Library/Application Support/LearnHarness/data`.
+ * `graph/` and `plugins/`). It must be given explicitly: the script never
+ * guesses, and it refuses to seed the OS-default real data directory
+ * (e.g. `~/.config/LearnHarness/data`) unless `--allow-real-data` is also
+ * passed. Point it at a scratch/dev copy instead.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -36,17 +37,20 @@ function usage() {
   console.log(`Usage: node scripts/seed-graph-fixture.mjs [options]
 
 Options:
-  --data-dir <dir>        LearnHarness data directory (contains graph/ and plugins/)
+  --data-dir <dir>        LearnHarness data directory (contains graph/ and plugins/).
+                          Required: no default. Seeding the OS-default real data
+                          directory additionally needs --allow-real-data.
   --plugin-data-dir <dir> Learning Path plugin data directory
                           (default: <data-dir>/plugins/learning-path/data)
   --with-path             Also install the synthetic Velora learning path
   --force                 Overwrite differing records instead of skipping them
   --dry-run               Show what would change without writing
   --remove                Remove the fixture records again (backup first)
+  --allow-real-data       Permit seeding the OS-default real data directory
   --help                  Show this help
 
-The default data directory is detected for the current OS. Seeding appends
-missing ledger lines and preserves every existing record.`);
+Seeding appends missing ledger lines and preserves every existing record.
+--remove is fixture-scoped and never needs --allow-real-data.`);
 }
 
 function fail(message) {
@@ -61,7 +65,7 @@ function defaultDataDir() {
 }
 
 function parseArgs(argv) {
-  const args = { withPath: false, force: false, dryRun: false, remove: false };
+  const args = { withPath: false, force: false, dryRun: false, remove: false, allowRealData: false };
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
     const next = () => {
@@ -75,6 +79,7 @@ function parseArgs(argv) {
     else if (arg === "--force") args.force = true;
     else if (arg === "--dry-run") args.dryRun = true;
     else if (arg === "--remove") args.remove = true;
+    else if (arg === "--allow-real-data") args.allowRealData = true;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`unknown option ${arg}`);
   }
@@ -365,9 +370,13 @@ try {
   if (args.help) {
     usage();
   } else {
-    const dataDir = path.resolve(args.dataDir ?? defaultDataDir());
+    if (!args.dataDir) throw new Error("--data-dir is required; the script never guesses a data directory. Point it at a dev/scratch copy (or pass the real directory together with --allow-real-data)");
+    const dataDir = path.resolve(args.dataDir);
     const pluginDataDir = path.resolve(args.pluginDataDir ?? path.join(dataDir, "plugins/learning-path/data"));
     if (!exists(dataDir)) throw new Error(`data directory does not exist: ${dataDir}`);
+    if (!args.remove && !args.allowRealData && path.resolve(defaultDataDir()) === dataDir) {
+      throw new Error(`${dataDir} is the OS-default real LearnHarness data directory; refusing to seed real data without --allow-real-data. Prefer a dev/scratch copy, or run with --remove to clean up a previous seed.`);
+    }
     const fixture = loadFixture();
     console.log(`${args.remove ? "removing" : "seeding"} Velora fixture in ${dataDir}${args.dryRun ? " (dry run)" : ""}`);
     if (args.remove) remove({ dataDir, pluginDataDir, force: args.force, dryRun: args.dryRun, fixture });
