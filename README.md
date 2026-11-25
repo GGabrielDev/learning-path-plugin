@@ -148,6 +148,16 @@ Knowledge Graph records.
    artifact, it saves the full text with `learning_path_save_artifact` — it
    appears in the Workspace linked to the node, with the session that made it.
    Agents can never create, edit, link or delete your items.
+
+   Documents come in through the same conversion pipeline wherever you are:
+   **Add to workspace** beside the Architect's upload converts a PDF or text
+   file and files it in the selected path's Workspace, linked `grounds` to the
+   nodes you pick; or drop PDF/text files onto the Workspace ledger pane. The
+   document is stored once in your source library — hash-deduplicated — and
+   the Workspace entry references it; nothing is copied into the workspace.
+   The Architect's refinement context lists node-linked material by title only
+   and reads a filed document through the same bounded chunk tool it uses for
+   any uploaded source.
 5. **Record what happened.** Progression is ungated:
    `unstarted → in_progress → consolidated`. Log mistakes by cognitive root
    cause; unresolved entries travel forward as watchpoints. If a topic genuinely
@@ -283,6 +293,14 @@ cite saved relational maps instead of asking for a redraw from memory. Agents
 never create, edit, link or delete learner items, and saving an artifact is
 never a gate: progression and revisits work identically without one.
 
+Documents are the Workspace's generalized uploads: **Add to workspace** in the
+Architect pane, or a PDF/text file dropped onto the Workspace ledger pane,
+converts the file to Markdown (the same pipeline, with the same notices) and
+files it as a `source` item linked `grounds` to the nodes you pick in the pane's
+node picker. `sources/` stays the single global store — the ledger entry
+references the source's id and never copies content — so re-uploading the same
+file reuses the stored copy and never files it twice.
+
 ## Project layout
 
 | Path | What |
@@ -294,7 +312,7 @@ never a gate: progression and revisits work identically without one.
 | `src/architect-agent.ts` | Persistent Path Architect definition and server tools |
 | `src/backend.ts` | RPC handlers, events, native bridge and activation lifecycle |
 | `src/view/path-hub.ts` | Path Hub: header, roadmap lanes, Architect pane, Node Inspector |
-| `src/view/workspace-ledger.ts` | Workspace ledger in the Node Inspector: flat list, add note, link/unlink, delete |
+| `src/view/workspace-pane.ts` | Workspace ledger pop-out pane: flat list, notes, links, deletion, dropped documents |
 | `src/view/*` | Architect chat, inspector, error ledger, pivots, dialogs, tool cards |
 | `src/settings.ts` | Artifact defaults, graph-tutoring opt-in, Architect model, safe path deletion |
 | `src/graph-context.ts` | Bounded read-only proposition matching and shared graph-tutoring rules |

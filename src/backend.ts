@@ -925,6 +925,49 @@ export function activate(ctx: PluginBackendContext): void {
     return { item };
   });
 
+  // Generalized uploads (phase 4): one converted document is filed as a
+  // node-linked source item in one learner write. sources/ stays the single
+  // global store — the manifest entry references the sourceId and never copies
+  // content — so hash deduplication and the Architect's chunk tools keep working
+  // unchanged. A document already filed under this path returns its item
+  // unchanged; link edits go through workspace.updateItemMeta.
+  handle("workspace.saveSource", (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "workspace.saveSource");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    const name = readText(value.name, "name", { max: 300, trim: true });
+    const markdown = readText(value.markdown, "markdown", { max: MAX_SOURCE_BYTES });
+    // The title defaults to the document name; a manifest title is capped shorter
+    // than a source name, so an unsupplied long name is truncated once here.
+    const title = value.title === undefined
+      ? name.slice(0, MAX_WORKSPACE_ITEM_TITLE_LENGTH)
+      : readText(value.title, "title", { max: MAX_WORKSPACE_ITEM_TITLE_LENGTH, trim: true });
+    if (value.links !== undefined && !Array.isArray(value.links)) {
+      throw new Error("links must be an array.");
+    }
+    const links = value.links ?? [];
+    const saved = store.saveSource({ name, markdown });
+    const existing = store
+      .workspace(pathId)
+      ?.items.find((item) => item.kind === "source" && item.sourceId === saved.reference.sourceId);
+    if (existing) {
+      return { item: existing, reference: saved.reference, deduplicated: true, alreadyFiled: true };
+    }
+    const item = store.saveWorkspaceItem(pathId, {
+      kind: "source",
+      title,
+      sourceId: saved.reference.sourceId,
+      addedBy: "learner",
+      links,
+    });
+    if (!saved.deduplicated) {
+      emit(EVENT_SOURCES_CHANGED, { sourceId: saved.reference.sourceId, deduplicated: false });
+    }
+    emit(EVENT_WORKSPACE_CHANGED, { pathId, itemId: item.id });
+    return { item, reference: saved.reference, deduplicated: saved.deduplicated, alreadyFiled: false };
+  });
+
   /** Bounded read: content files are capped at MAX_WORKSPACE_NOTE_BYTES on
    * write, source items reference the global sources store and carry no file. */
   handle("workspace.readItem", (input) => {

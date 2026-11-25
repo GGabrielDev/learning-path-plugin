@@ -20,6 +20,12 @@
  * (rel `informs` for new links, existing relations preserved) via the existing
  * `workspace.updateItemMeta` links array.
  *
+ * Dropped documents: PDF/text files dropped onto the pane are converted
+ * through `ctx.documents.toMarkdown` (the Architect pane's pipeline) and filed
+ * as node-linked `source` items (rel `grounds`) through one learner write,
+ * `workspace.saveSource`. The manifest entry references the global source
+ * library's id; content is never copied into the workspace.
+ *
  * Learner-only writes. Agents never create, edit, link or delete learner
  * items. Everything rendered here is controlled by the caller (path, node and
  * workspace after each refetch) and every widget belongs to the per-mount
@@ -42,9 +48,36 @@ export interface AddNoteInput {
   readonly links: readonly WorkspaceItemLink[];
 }
 
+export interface AddSourceInput {
+  /** The converted document's name and Markdown (already through the global
+   * conversion pipeline; the backend stores it once, hash-deduplicated). */
+  readonly name: string;
+  readonly markdown: string;
+  /** Node links filed with the document (rel `grounds`). */
+  readonly links: readonly WorkspaceItemLink[];
+}
+
+/** Documents file as `grounds`: source material a node's understanding stands
+ * on. Notes keep the learner's `informs` filing; one rel per material kind. */
+export const DOCUMENT_LINK_REL = "grounds";
+
+/** The file types the conversion pipeline accepts, shared with the Architect
+ * pane's picker: PDFs and UTF-8 text/markdown documents. */
+export const UPLOAD_ACCEPT_TYPES = ".pdf,.md,.markdown,.txt,.text,application/pdf,text/plain,text/markdown";
+
+/** True when a dropped file is one the conversion pipeline can take. */
+export function isConvertibleFile(file: { name: string; type?: string }): boolean {
+  const type = file.type ?? "";
+  if (type === "application/pdf" || type === "text/plain" || type === "text/markdown") return true;
+  return /\.(pdf|md|markdown|txt|text)$/i.test(file.name);
+}
+
 export interface WorkspacePaneOptions {
   /** Persist a new note through the plugin backend (workspace.saveNote). */
   saveNote(input: AddNoteInput): void | Promise<void>;
+  /** Store a converted document in the global source library and file it as a
+   * node-linked source item (workspace.saveSource: one learner write). */
+  saveSource(input: AddSourceInput): void | Promise<void>;
   /** Replace one item's whole links array (learner filing). */
   setItemLinks(itemId: string, links: readonly WorkspaceItemLink[]): void | Promise<void>;
   /** Delete one workspace item and its content file. */
@@ -135,42 +168,14 @@ export function createWorkspacePane(
     );
   };
 
-  /** Every node of the path, module order, as picker options. The picker is
-   * the one filing surface: checkboxes, not drag order, never progression. */
-  function nodeOptions(path: LearningPath): readonly { nodeId: string; title: string; moduleTitle: string }[] {
-    return path.modules.flatMap((module) =>
-      module.nodes.map((node) => ({ nodeId: node.id, title: node.title, moduleTitle: module.title })),
-    );
-  }
-
-  function buildPicker(
+  // The picker is the one filing surface: checkboxes, not drag order, never
+  // progression. Exported so the Architect pane's upload dialog files identically.
+  const buildPicker = (
     dialogDocument: Document,
     path: LearningPath,
     checkedNodeIds: ReadonlySet<string>,
-  ): { root: HTMLElement; checked(): string[] } {
-    const root = element(dialogDocument, "div", "lp-workspace-picker");
-    root.setAttribute("aria-label", "Node picker");
-    const inputs = new Map<string, HTMLInputElement>();
-    for (const option of nodeOptions(path)) {
-      const label = element(dialogDocument, "label", "lp-workspace-picker-option");
-      const input = element(dialogDocument, "input", "lp-checkbox");
-      input.type = "checkbox";
-      input.value = option.nodeId;
-      input.checked = checkedNodeIds.has(option.nodeId);
-      input.setAttribute(
-        "aria-label",
-        `Link to ${option.title} (${option.moduleTitle})`,
-      );
-      inputs.set(option.nodeId, input);
-      label.append(input);
-      label.append(element(dialogDocument, "span", undefined, option.title));
-      root.append(label);
-    }
-    return {
-      root,
-      checked: () => [...inputs.entries()].filter(([, input]) => input.checked).map(([nodeId]) => nodeId),
-    };
-  }
+  ): { root: HTMLElement; checked(): string[] } =>
+    buildNodePicker(dialogDocument, path, checkedNodeIds);
 
   /** Add-note dialog: title, Markdown body, and a node picker defaulting to the
    * inspected node. An empty picker saves an unlinked note. */
@@ -357,6 +362,161 @@ export function createWorkspacePane(
     ) as PluginWidgetHandle<never>;
     dialogHandles.push(dialog);
   }
+
+  /** Filing dialog for one dropped (or otherwise delivered) document: the file
+   * is converted through `ctx.documents.toMarkdown` (the same pipeline the
+   * Architect pane uses), the conversion notices surface here, and the picker
+   * supplies the links (rel `grounds`). Saving goes through the caller's
+   * `saveSource`, so the global source library stays the single store. The
+   * picker may stay empty: the item then starts unlinked, like a note.
+   * Resolves when the dialog closes (saved, cancelled or disposed). */
+  function openAddSourceDialog(file: File): Promise<void> {
+    if (signal.aborted || disposed) return Promise.resolve();
+    let dialog: PluginWidgetHandle<never> | null = null;
+    const close = (): void => {
+      const current = dialog;
+      dialog = null;
+      current?.dispose();
+    };
+    return new Promise<void>((resolve) => {
+      dialog = ctx.ui.openDialog(
+      {
+        title: `File “${file.name}” in Workspace`,
+        content: (content: HTMLElement, contentSignal: AbortSignal): (() => void) | undefined => {
+          const dialogDocument = content.ownerDocument;
+          const root = element(dialogDocument, "div", "lp-workspace-source-dialog");
+          root.append(
+            element(
+              dialogDocument,
+              "p",
+              "lp-muted",
+              "The document is converted to Markdown and stored once in your source library; the workspace entry references it. Pick the nodes it grounds; leave all unchecked to keep it unlinked.",
+            ),
+          );
+          const status = element(dialogDocument, "p", "lp-muted lp-workspace-source-status");
+          status.setAttribute("role", "status");
+          status.textContent = `Converting ${file.name}…`;
+          const pickerLabel = element(dialogDocument, "span", "lp-field-label", "Linked nodes");
+          const picker = buildPicker(
+            dialogDocument,
+            pathWithoutNull(),
+            new Set(lastNode ? [lastNode.id] : []),
+          );
+          root.append(status, pickerLabel, picker.root);
+
+          const error = element(dialogDocument, "p", "lp-dialog-error");
+          error.setAttribute("role", "alert");
+          error.hidden = true;
+
+          const saveHost = element(dialogDocument, "span", "lp-button-host");
+          root.append(error, saveHost);
+          content.append(root);
+
+          const save = ctx.ui.mountButton(
+            saveHost,
+            {
+              label: "Save to Workspace",
+              variant: "default",
+              size: "sm",
+              disabled: true,
+              onClick: async () => {
+                if (contentSignal.aborted || converted === null) return;
+                error.hidden = true;
+                save.update({ disabled: true, label: "Saving…" });
+                try {
+                  await options.saveSource({
+                    name: converted.name,
+                    markdown: converted.markdown,
+                    links: picker.checked().map((nodeId) => ({ to: nodeId, rel: DOCUMENT_LINK_REL })),
+                  });
+                  if (contentSignal.aborted) return;
+                  close();
+                } catch (problem) {
+                  if (contentSignal.aborted) return;
+                  error.textContent = `Could not file the document: ${describeError(problem)}`;
+                  error.hidden = false;
+                  save.update({ disabled: false, label: "Save to Workspace" });
+                }
+              },
+            },
+            { signal: contentSignal },
+          );
+          dialogHandles.push(save);
+
+          let converted: { name: string; markdown: string } | null = null;
+          void (async () => {
+            try {
+              const result = await ctx.documents.toMarkdown(file, { signal: contentSignal });
+              if (contentSignal.aborted) return;
+              converted = { name: result.name, markdown: result.markdown };
+              status.textContent = result.notices.length > 0 ? result.notices.join(" ") : "";
+              save.update({ disabled: false, label: "Save to Workspace" });
+            } catch (problem) {
+              if (contentSignal.aborted) return;
+              status.textContent = "";
+              error.textContent = `Could not convert ${file.name}: ${describeError(problem)}`;
+              error.hidden = false;
+            }
+          })();
+
+          return () => {
+            save.dispose();
+            dialogHandles = dialogHandles.filter((handle) => handle !== save);
+            root.remove();
+            resolve();
+          };
+        },
+      },
+      { signal },
+      ) as PluginWidgetHandle<never>;
+      dialogHandles.push(dialog);
+    });
+  }
+
+  /** The dialog only opens from a rendered ledger, which always has a path
+   * (onDrop refuses to queue while none is rendered). */
+  function pathWithoutNull(): LearningPath {
+    return lastPath as LearningPath;
+  }
+
+  /** Dropped documents queue one at a time: each conversion opens its filing
+   * dialog, and the next file waits until the learner resolves the current one. */
+  let dropQueue: File[] = [];
+  let filingDrop = false;
+
+  async function processDropQueue(): Promise<void> {
+    if (filingDrop || signal.aborted || disposed) return;
+    filingDrop = true;
+    try {
+      while (dropQueue.length > 0 && !signal.aborted && !disposed) {
+        const file = dropQueue.shift()!;
+        await openAddSourceDialog(file);
+      }
+    } finally {
+      filingDrop = false;
+    }
+  }
+
+  const onDragOver = (event: Event): void => {
+    if (signal.aborted || disposed) return;
+    event.preventDefault();
+    container.classList.add("lp-drop-target");
+  };
+  const onDragLeave = (): void => {
+    container.classList.remove("lp-drop-target");
+  };
+  const onDrop = (event: DragEvent): void => {
+    if (signal.aborted || disposed) return;
+    event.preventDefault();
+    container.classList.remove("lp-drop-target");
+    const files = [...(event.dataTransfer?.files ?? [])].filter(isConvertibleFile);
+    if (files.length === 0 || lastPath === null) return;
+    dropQueue.push(...files);
+    void processDropQueue();
+  };
+  container.addEventListener("dragover", onDragOver, { signal });
+  container.addEventListener("dragleave", onDragLeave, { signal });
+  container.addEventListener("drop", onDrop as EventListener, { signal });
 
   /** Open the read-only viewer: the item's content is fetched now, on demand,
    * through `workspace.readItem` — never as part of listing the ledger. */
@@ -567,6 +727,44 @@ export function createWorkspacePane(
       dialogHandles = [];
       container.replaceChildren();
     },
+  };
+}
+
+/** Exported for tests and the Architect pane's upload dialog: every node of
+ * the path, module order, as picker options. The picker is the one filing
+ * surface: checkboxes, not drag order, never progression. */
+export function nodeOptions(path: LearningPath): readonly { nodeId: string; title: string; moduleTitle: string }[] {
+  return path.modules.flatMap((module) =>
+    module.nodes.map((node) => ({ nodeId: node.id, title: node.title, moduleTitle: module.title })),
+  );
+}
+
+export function buildNodePicker(
+  dialogDocument: Document,
+  path: LearningPath,
+  checkedNodeIds: ReadonlySet<string>,
+): { root: HTMLElement; checked(): string[] } {
+  const root = element(dialogDocument, "div", "lp-workspace-picker");
+  root.setAttribute("aria-label", "Node picker");
+  const inputs = new Map<string, HTMLInputElement>();
+  for (const option of nodeOptions(path)) {
+    const label = element(dialogDocument, "label", "lp-workspace-picker-option");
+    const input = element(dialogDocument, "input", "lp-checkbox");
+    input.type = "checkbox";
+    input.value = option.nodeId;
+    input.checked = checkedNodeIds.has(option.nodeId);
+    input.setAttribute(
+      "aria-label",
+      `Link to ${option.title} (${option.moduleTitle})`,
+    );
+    inputs.set(option.nodeId, input);
+    label.append(input);
+    label.append(element(dialogDocument, "span", undefined, option.title));
+    root.append(label);
+  }
+  return {
+    root,
+    checked: () => [...inputs.entries()].filter(([, input]) => input.checked).map(([nodeId]) => nodeId),
   };
 }
 

@@ -396,3 +396,135 @@ test("no agent tool writes learner workspace items; agents only read", async () 
     close(host, directory);
   }
 });
+
+test("workspace.saveSource stores the document once and files it as a node-linked source item", async () => {
+  const { host, directory } = hostWithPath();
+  try {
+    const markdown = "# A paper\n\nConverted document text.";
+    const saved = await host.call<{
+      item: { id: string; kind: string; title: string; sourceId: string; addedBy: string; links: { to: string; rel: string }[] };
+      reference: { sourceId: string; name: string };
+      deduplicated: boolean;
+      alreadyFiled: boolean;
+    }>("workspace.saveSource", {
+      pathId: "path-linear-algebra",
+      name: "paper.pdf",
+      markdown,
+      links: [{ to: "n-skill", rel: "grounds" }],
+    });
+    assert.equal(saved.item.kind, "source");
+    assert.equal(saved.item.title, "paper.pdf", "the title defaults to the document name");
+    assert.equal(saved.item.sourceId, saved.reference.sourceId, "the manifest references the global source");
+    assert.equal(saved.item.addedBy, "learner");
+    assert.deepEqual(saved.item.links, [{ to: "n-skill", rel: "grounds" }]);
+    assert.equal(saved.alreadyFiled, false);
+
+    // sources/ stays the single global store: the document's bytes live there,
+    // and the workspace carries no copy — a source item has no content file.
+    assert.equal(
+      fs.readFileSync(path.join(directory, "sources", `${saved.reference.sourceId}.md`), "utf8"),
+      markdown,
+    );
+    assert.ok(
+      !fs.existsSync(path.join(directory, WORKSPACES_DIRECTORY, "path-linear-algebra", WORKSPACE_FILES_DIRECTORY, `${saved.item.id}.md`)),
+      "a source item references the library; nothing is copied under workspaces/",
+    );
+    const read = await host.call<{ content: string | null }>("workspace.readItem", {
+      pathId: "path-linear-algebra",
+      itemId: saved.item.id,
+    });
+    assert.equal(read.content, null, "the workspace read returns no file for a source item");
+
+    assert.ok(host.events.some((event) => event.topic === "sources-changed"));
+    assert.ok(host.events.some((event) => event.topic === EVENT_WORKSPACE_CHANGED));
+
+    const reopened = openLearningPathStore(directory);
+    const items = reopened.workspace("path-linear-algebra")?.items ?? [];
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.sourceId, saved.reference.sourceId);
+  } finally {
+    close(host, directory);
+  }
+});
+
+test("workspace.saveSource deduplicates: a re-filed document returns the existing item", async () => {
+  const { host, directory } = hostWithPath();
+  try {
+    const markdown = "# Same bytes\n\nIdentical conversion.";
+    const first = await host.call<{ item: { id: string }; reference: { sourceId: string } }>(
+      "workspace.saveSource",
+      { pathId: "path-linear-algebra", name: "first.pdf", markdown, links: [{ to: "n-skill", rel: "grounds" }] },
+    );
+    const second = await host.call<{
+      item: { id: string; title: string; links: { to: string; rel: string }[] };
+      reference: { sourceId: string };
+      deduplicated: boolean;
+      alreadyFiled: boolean;
+    }>("workspace.saveSource", {
+      pathId: "path-linear-algebra",
+      name: "renamed-copy.pdf",
+      markdown,
+      links: [],
+    });
+    assert.equal(second.item.id, first.item.id, "the same document does not file twice");
+    assert.equal(second.item.title, "first.pdf", "the original filing, including its links, stands");
+    assert.deepEqual(second.item.links, [{ to: "n-skill", rel: "grounds" }]);
+    assert.equal(second.reference.sourceId, first.reference.sourceId, "hash dedup in sources/ holds");
+    assert.equal(second.deduplicated, true);
+    assert.equal(second.alreadyFiled, true);
+
+    const reopened = openLearningPathStore(directory);
+    assert.equal(reopened.workspace("path-linear-algebra")?.items.length, 1);
+    assert.equal(reopened.sources().length, 1, "one document, one stored source");
+
+    // Link edits go through the learner's existing filing surface.
+    await host.call("workspace.updateItemMeta", {
+      pathId: "path-linear-algebra",
+      itemId: first.item.id,
+      links: [{ to: "n-holistic", rel: "informs" }],
+    });
+    assert.equal(
+      openLearningPathStore(directory).workspace("path-linear-algebra")?.items[0]?.links[0]?.to,
+      "n-holistic",
+    );
+  } finally {
+    close(host, directory);
+  }
+});
+
+test("workspace.saveSource rejects an unknown path and lets the store validate links", async () => {
+  const { host, directory } = hostWithPath();
+  try {
+    await assert.rejects(
+      host.call("workspace.saveSource", { pathId: "path-missing", name: "x.pdf", markdown: "text" }),
+      /Unknown path/,
+    );
+    await assert.rejects(
+      host.call("workspace.saveSource", {
+        pathId: "path-linear-algebra",
+        name: "x.pdf",
+        markdown: "text",
+        links: [{ to: "n-nothing", rel: "grounds" }],
+      }),
+      /link/,
+      "links resolve against real node ids",
+    );
+    await assert.rejects(
+      host.call("workspace.saveSource", {
+        pathId: "path-linear-algebra",
+        name: "x.pdf",
+        markdown: "text",
+        links: "not-an-array",
+      }),
+      /links must be an array/,
+    );
+    await assert.rejects(
+      host.call("workspace.saveSource", { pathId: "path-linear-algebra", name: "", markdown: "text" }),
+      /name must not be blank/,
+    );
+    const reopened = openLearningPathStore(directory);
+    assert.equal(reopened.workspace("path-linear-algebra"), null, "a rejected save writes nothing");
+  } finally {
+    close(host, directory);
+  }
+});
