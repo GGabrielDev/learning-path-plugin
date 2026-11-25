@@ -25,7 +25,7 @@ import { mountSettingsPage } from "../src/settings.ts";
 import { SETTINGS_FILE } from "../src/store.ts";
 import { makePath } from "./fixtures.ts";
 import { createHost } from "./host.ts";
-import { createViewFixture, selectGraphNode } from "./view-host.ts";
+import { createViewFixture, selectRoadmapCard } from "./view-host.ts";
 import type { ViewFixture } from "./view-host.ts";
 
 const project = fileURLToPath(new URL("../", import.meta.url));
@@ -238,7 +238,7 @@ test("dialogs and menus defer Escape and focus to the host and close without sid
 
   mountPathHub(fixture.context, fixture.root, fixture.context.signal);
   await flushAll(fixture);
-  selectGraphNode(fixture.root, "n-concept");
+  selectRoadmapCard(fixture.root, "n-concept");
   await flushAll(fixture);
 
   // A modal dialog: accessible title, content scoped to its own signal.

@@ -939,16 +939,16 @@ export function fire(element: HTMLElement, type: string): void {
   element.dispatchEvent(event);
 }
 
-/** The graph card for one node: the path pane's real `<button>`. */
-export function graphCard(root: HTMLElement, nodeId: string): HTMLElement {
-  const card = root.querySelector<HTMLElement>(`.lp-graph-card[data-node-id="${nodeId}"]`);
-  assert.ok(card, `Missing graph card ${nodeId}`);
+/** The roadmap card for one node: the path pane's real `<button>`. */
+export function roadmapCard(root: HTMLElement, nodeId: string): HTMLElement {
+  const card = root.querySelector<HTMLElement>(`.lp-roadmap-card[data-node-id="${nodeId}"]`);
+  assert.ok(card, `Missing roadmap card ${nodeId}`);
   return card;
 }
 
-/** Click a graph card, the learner's route into the shared inspector. */
-export function selectGraphNode(root: HTMLElement, nodeId: string): HTMLElement {
-  const card = graphCard(root, nodeId);
+/** Click a roadmap card, the learner's route into the shared inspector. */
+export function selectRoadmapCard(root: HTMLElement, nodeId: string): HTMLElement {
+  const card = roadmapCard(root, nodeId);
   fire(card, "click");
   return card;
 }

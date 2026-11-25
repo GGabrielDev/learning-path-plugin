@@ -1,9 +1,10 @@
 /** Roadmap lane view tests.
  *
- * Mounted through the real Path Hub: the graph ↔ roadmap toggle appears only
- * for multi-module paths, lanes render only recorded structure (no arrows,
- * dates or order pressure), cards select nodes into the same inspector, and
- * everything disposes with the hub. No browser or model request.
+ * Mounted through the real Path Hub: the roadmap is the one lens over a path
+ * (one lane per module, node cards, no arrows, dates or order pressure, and no
+ * view toggle or graph DOM at all), cards select nodes into the same
+ * inspector, and everything disposes with the hub. No browser or model
+ * request.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -30,14 +31,6 @@ async function mounted(fixture: ReturnType<typeof createViewFixture>): Promise<H
   return container;
 }
 
-function roadmapButton(fixture: ReturnType<typeof createViewFixture>) {
-  const record = fixture
-    .all("mountButton")
-    .find((entry) => entry.props.label === "Roadmap view" || entry.props.label === "Graph view");
-  assert.ok(record, "the view toggle is mounted");
-  return record;
-}
-
 function cardAt(root: HTMLElement, laneIndex: number, cardIndex: number): HTMLElement {
   const lane = root.querySelectorAll<HTMLElement>(".lp-lane")[laneIndex];
   assert.ok(lane, `Missing lane ${laneIndex}`);
@@ -46,38 +39,31 @@ function cardAt(root: HTMLElement, laneIndex: number, cardIndex: number): HTMLEl
   return card;
 }
 
-test("a one-module path offers no roadmap toggle; the multi-module path does", async () => {
-  const single = createViewFixture({
-    paths: [singleModulePath()],
-    conversations: [snapshot("chat-architect")],
-  });
-  try {
-    await mounted(single);
-    const hiddenToggle = single
-      .all("mountButton")
-      .find((entry) => entry.props.label === "Roadmap view");
-    assert.ok(hiddenToggle, "the toggle is mounted for consistent widget state");
-    assert.equal(
-      hiddenToggle.container.hidden,
-      true,
-      "a single lane is not a roadmap; the toggle stays hidden",
-    );
-  } finally {
-    single.restore();
-  }
-
-  const multi = createViewFixture({
-    paths: [makePath()],
-    conversations: [snapshot("chat-architect")],
-  });
-  try {
-    await mounted(multi);
-    const button = roadmapButton(multi);
-    assert.equal(button.props.variant, "outline");
-    assert.equal(button.container.hidden, false);
-    assert.equal(button.props.label, "Roadmap view");
-  } finally {
-    multi.restore();
+test("the roadmap is the only lens: no graph DOM and no view toggle, for any path", async () => {
+  for (const paths of [[singleModulePath()], [makePath()]]) {
+    const fixture = createViewFixture({
+      paths,
+      conversations: [snapshot("chat-architect")],
+    });
+    try {
+      await mounted(fixture);
+      assert.equal(fixture.all("mountTree").length, 0, "no tree widget is ever mounted");
+      assert.equal(
+        fixture.all("mountButton").some((entry) =>
+          entry.props.label === "Roadmap view" || entry.props.label === "Graph view"),
+        false,
+        "the removed graph lens leaves no toggle behind",
+      );
+      assert.equal(fixture.root.querySelectorAll(".lp-graph-card, .lp-graph, .lp-graph-edges").length, 0,
+        "no graph DOM is drawn");
+      assert.match(
+        fixture.root.querySelector<HTMLElement>(".lp-path-pane .lp-pane-title")!.textContent ?? "",
+        /Path roadmap/,
+      );
+      assert.ok(fixture.root.querySelector(".lp-roadmap"), "the roadmap renders without a toggle");
+    } finally {
+      fixture.restore();
+    }
   }
 });
 
@@ -88,16 +74,9 @@ test("the roadmap renders module lanes and node cards from recorded structure on
   });
   try {
     await mounted(fixture);
-    await roadmapButton(fixture).props.onClick();
     await fixture.flush();
 
     assert.equal(fixture.all("mountTree").length, 0, "no tree widget is ever mounted");
-    assert.equal(fixture.root.querySelectorAll(".lp-graph-card").length, 0, "the graph is released in roadmap mode");
-    assert.match(
-      fixture.root.querySelector<HTMLElement>(".lp-path-pane .lp-pane-title")!.textContent ?? "",
-      /Path roadmap/,
-    );
-
     const lanes = fixture.root.querySelectorAll<HTMLElement>(".lp-lane");
     assert.equal(lanes.length, 2);
     assert.match(lanes[0]!.textContent ?? "", /Structure first/);
@@ -132,7 +111,6 @@ test("a card click selects the node into the shared inspector and marks the card
   });
   try {
     await mounted(fixture);
-    await roadmapButton(fixture).props.onClick();
     await fixture.flush();
 
     const card = cardAt(fixture.root, 1, 1);
@@ -152,41 +130,6 @@ test("a card click selects the node into the shared inspector and marks the card
   }
 });
 
-test("toggles return to the graph and re-render without leaking the roadmap DOM", async () => {
-  const fixture = createViewFixture({
-    paths: [makePath()],
-    conversations: [snapshot("chat-architect")],
-  });
-  try {
-    await mounted(fixture);
-    await roadmapButton(fixture).props.onClick();
-    await fixture.flush();
-    assert.ok(fixture.root.querySelector(".lp-roadmap"));
-
-    const back = fixture
-      .all("mountButton")
-      .find((entry) => entry.props.label === "Graph view")!;
-    assert.equal(back.props.variant, "secondary", "the active mode reads as on");
-    await back.props.onClick();
-    await fixture.flush();
-
-    assert.equal(fixture.all("mountTree").length, 0, "the graph lens never mounts a tree widget");
-    assert.equal(fixture.root.querySelectorAll(".lp-graph-card").length, 6);
-    assert.match(
-      fixture.root.querySelector<HTMLElement>(".lp-path-pane .lp-pane-title")!.textContent ?? "",
-      /Path graph/,
-    );
-    assert.equal(fixture.root.querySelector(".lp-roadmap"), null, "the roadmap DOM is removed");
-    assert.equal(fixture.root.querySelectorAll(".lp-roadmap-card").length, 0);
-    assert.equal(
-      fixture.all("mountBadge").every((badge) => badge.container.closest(".lp-roadmap") === null),
-      true,
-    );
-  } finally {
-    fixture.restore();
-  }
-});
-
 test("aborting the hub while the roadmap is showing disposes its badges and DOM", async () => {
   const fixture = createViewFixture({
     paths: [makePath()],
@@ -194,7 +137,6 @@ test("aborting the hub while the roadmap is showing disposes its badges and DOM"
   });
   try {
     await mounted(fixture);
-    await roadmapButton(fixture).props.onClick();
     await fixture.flush();
     const roadmapBadges = fixture
       .all("mountBadge")

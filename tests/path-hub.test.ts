@@ -1,8 +1,8 @@
 /** Path Hub frontend tests.
  *
  * Public-API test double only: the real view is mounted against a recorded host
- * UI and an in-memory JSON backend. These tests prove disposal, graph rendering
- * and navigation, Architect chat state, document-conversion failures and
+ * UI and an in-memory JSON backend. These tests prove disposal, roadmap
+ * rendering and navigation, Architect chat state, document-conversion failures and
  * `onResync` recovery without a browser or a model request.
  */
 import { test } from "node:test";
@@ -13,7 +13,7 @@ import { effectiveArtifact } from "../src/view/node-inspector.ts";
 import { ARTIFACT_CATALOG } from "../src/domain.ts";
 import type { LearningPath } from "../src/domain.ts";
 import { makePath } from "./fixtures.ts";
-import { createViewFixture, fire, graphCard, makeConversation, selectGraphNode, setSelect } from "./view-host.ts";
+import { createViewFixture, fire, makeConversation, roadmapCard, selectRoadmapCard, setSelect } from "./view-host.ts";
 import type { MountRecord, ViewFixture } from "./view-host.ts";
 
 function assistant(text: string): PluginAgentSnapshot["messages"][number] {
@@ -43,14 +43,7 @@ async function mounted(fixture: ViewFixture): Promise<HTMLElement> {
   return container;
 }
 
-/** The recorded interleave edges, in the direction the graph draws them. */
-function drawnEdges(root: HTMLElement): string[] {
-  return [...root.querySelectorAll(".lp-graph-edge")].map(
-    (edge) => `${edge.getAttribute("data-edge-from")}->${edge.getAttribute("data-edge-to")}`,
-  );
-}
-
-test("Path Hub mounts every surface and disposes widgets, graph cards and listeners on unmount", async () => {
+test("Path Hub mounts every surface and disposes widgets, roadmap cards and listeners on unmount", async () => {
   const path = makePath();
   const fixture = createViewFixture({
     paths: [path],
@@ -62,29 +55,16 @@ test("Path Hub mounts every surface and disposes widgets, graph cards and listen
     assert.equal(fixture.all("mountTree").length, 0, "the host tree widget is gone from the Path Hub");
     assert.equal(
       container.querySelector<HTMLElement>(".lp-path-pane .lp-pane-title")!.textContent,
-      "Path graph",
-      "the default lens is a graph, not a tree",
+      "Path roadmap",
+      "the roadmap is the path pane's lens, not a tree",
     );
-    const clusters = container.querySelectorAll<HTMLElement>(".lp-graph-cluster");
-    assert.equal(clusters.length, 2, "makePath()'s two modules are clusters");
-    const cards = container.querySelectorAll<HTMLElement>(".lp-graph-card");
+    const lanes = container.querySelectorAll<HTMLElement>(".lp-lane");
+    assert.equal(lanes.length, 2, "makePath()'s two modules are lanes");
+    const cards = container.querySelectorAll<HTMLElement>(".lp-roadmap-card");
     assert.equal(cards.length, 6, "every node is a card");
     assert.ok(
       [...cards].every((card) => card.tagName === "BUTTON" && card.getAttribute("type") === "button"),
       "cards are real, keyboard-focusable buttons",
-    );
-    assert.deepEqual(
-      drawnEdges(container).sort(),
-      [
-        "n-concept->n-contrast",
-        "n-concept->n-skill",
-        "n-contrast->n-checkpoint",
-        "n-holistic->n-checkpoint",
-        "n-holistic->n-concept",
-        "n-skill->n-bridge",
-        "n-skill->n-contrast",
-      ],
-      "exactly the recorded interleavesNodeIds edges are drawn",
     );
     assert.equal(fixture.all("mountStandardComposer").length, 1);
     assert.equal(fixture.all("mountMarkdown").length, 1, "the stored Architect turn is rendered as Markdown");
@@ -114,7 +94,7 @@ test("Path Hub mounts every surface and disposes widgets, graph cards and listen
   }
 });
 
-test("graph renders module clusters and node cards with badges and preserves selection across updates", async () => {
+test("roadmap renders module lanes and node cards with badges and preserves selection across updates", async () => {
   const path = makePath();
   const fixture = createViewFixture({
     paths: [path],
@@ -122,21 +102,21 @@ test("graph renders module clusters and node cards with badges and preserves sel
   });
   try {
     await mounted(fixture);
-    const clusters = [...fixture.root.querySelectorAll<HTMLElement>(".lp-graph-cluster")];
+    const lanes = [...fixture.root.querySelectorAll<HTMLElement>(".lp-lane")];
     assert.deepEqual(
-      clusters.map((cluster) => cluster.querySelector(".lp-graph-cluster-title")?.textContent),
+      lanes.map((lane) => lane.querySelector(".lp-lane-title")?.textContent),
       ["Structure first", "Synthesis"],
     );
-    assert.match(clusters[0]!.textContent ?? "", /1\/3 consolidated/);
-    assert.match(clusters[1]!.textContent ?? "", /0\/3 consolidated/);
+    assert.match(lanes[0]!.textContent ?? "", /1\/3 consolidated/);
+    assert.match(lanes[1]!.textContent ?? "", /0\/3 consolidated/);
     assert.deepEqual(
-      [...fixture.root.querySelectorAll<HTMLElement>(".lp-graph-card")].map(
+      [...fixture.root.querySelectorAll<HTMLElement>(".lp-roadmap-card")].map(
         (card) => card.dataset.nodeId,
       ),
       ["n-holistic", "n-concept", "n-skill", "n-contrast", "n-checkpoint", "n-bridge"],
     );
     assert.match(
-      graphCard(fixture.root, "n-concept").textContent ?? "",
+      roadmapCard(fixture.root, "n-concept").textContent ?? "",
       /1 teaching/,
       "child chats are counted on the card where they are linked",
     );
@@ -145,14 +125,14 @@ test("graph renders module clusters and node cards with badges and preserves sel
         .all("mountBadge")
         // Card badges mount into `lp-badge-row` hosts; overview and inspector
         // badges use `lp-badge-host`, so this scopes the assertion.
-        .filter((badge) => badge.container.closest(".lp-graph-card") !== null)
+        .filter((badge) => badge.container.closest(".lp-roadmap-card") !== null)
         .slice(0, 6)
         .map((badge) => badge.props.text),
       ["Holistic", "Consolidated", "Concept", "In progress", "Skill", "Unstarted"],
     );
 
     const initialArchitectCalls = fixture.calls.filter((call) => call.name.startsWith("architect")).length;
-    const conceptCard = selectGraphNode(fixture.root, "n-concept");
+    const conceptCard = selectRoadmapCard(fixture.root, "n-concept");
     await fixture.flush();
     const inspector = fixture.root.querySelector<HTMLElement>(".lp-inspector")!;
     assert.equal(inspector.dataset.nodeId, "n-concept");
@@ -167,13 +147,13 @@ test("graph renders module clusters and node cards with badges and preserves sel
     );
 
     assert.equal(
-      graphCard(fixture.root, "n-concept").getAttribute("aria-pressed"),
+      roadmapCard(fixture.root, "n-concept").getAttribute("aria-pressed"),
       "true",
       "the selected card is marked",
     );
-    assert.match(graphCard(fixture.root, "n-concept").className, /lp-graph-card-selected/);
+    assert.match(roadmapCard(fixture.root, "n-concept").className, /lp-roadmap-card-selected/);
     assert.equal(
-      graphCard(fixture.root, "n-concept"),
+      roadmapCard(fixture.root, "n-concept"),
       conceptCard,
       "selection repaints in place, so keyboard focus stays on the card",
     );
@@ -182,26 +162,26 @@ test("graph renders module clusters and node cards with badges and preserves sel
     assert.ok(interleaved, "interleaved prior nodes are followable links");
     await interleaved.props.onClick();
     assert.equal(fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId, "n-holistic");
-    assert.equal(graphCard(fixture.root, "n-holistic").getAttribute("aria-pressed"), "true");
-    assert.equal(graphCard(fixture.root, "n-concept").getAttribute("aria-pressed"), "false");
+    assert.equal(roadmapCard(fixture.root, "n-holistic").getAttribute("aria-pressed"), "true");
+    assert.equal(roadmapCard(fixture.root, "n-concept").getAttribute("aria-pressed"), "false");
 
     // A path refresh rebuilds the cards; the selection belongs to the hub, not
     // to the DOM, so it survives the re-render with the inspector intact.
     fixture.emit("paths-changed", { id: path.id });
     await fixture.flush();
     assert.equal(
-      graphCard(fixture.root, "n-holistic").getAttribute("aria-pressed"),
+      roadmapCard(fixture.root, "n-holistic").getAttribute("aria-pressed"),
       "true",
-      "selection survives a graph re-render",
+      "selection survives a roadmap re-render",
     );
     assert.equal(
       fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId,
       "n-holistic",
-      "re-rendering the graph never clears the inspector selection",
+      "re-rendering the roadmap never clears the inspector selection",
     );
 
     // Child chats stay openable from the inspector that the card selected into.
-    selectGraphNode(fixture.root, "n-concept");
+    selectRoadmapCard(fixture.root, "n-concept");
     await fixture.flush();
     await liveButtons(fixture).find((button) => button.props.label === "Actions")!.props.onClick();
     const menu = fixture.find("openMenu");
@@ -213,7 +193,7 @@ test("graph renders module clusters and node cards with badges and preserves sel
     assert.equal(
       fixture.calls.filter((call) => call.name.startsWith("architect")).length,
       initialArchitectCalls,
-      "graph navigation never refetches or restarts the Architect",
+      "roadmap navigation never refetches or restarts the Architect",
     );
   } finally {
     fixture.restore();
@@ -225,7 +205,7 @@ test("node inspector persists progression and artifact choices and refreshes bad
   const fixture = createViewFixture({ paths: [path], conversations: [snapshot("chat-architect")] });
   try {
     await mounted(fixture);
-    selectGraphNode(fixture.root, "n-concept");
+    selectRoadmapCard(fixture.root, "n-concept");
 
     const progression = fixture.root.querySelector<HTMLSelectElement>('select[aria-label="Progression"]')!;
     setSelect(progression, "consolidated");
@@ -242,7 +222,7 @@ test("node inspector persists progression and artifact choices and refreshes bad
         .some(
           (badge) =>
             badge.props.text === "Consolidated" &&
-            badge.container.closest(".lp-graph-card")?.getAttribute("aria-pressed") === "true",
+            badge.container.closest(".lp-roadmap-card")?.getAttribute("aria-pressed") === "true",
         ),
       "the selected card's progression badge updates with the record",
     );
@@ -602,7 +582,7 @@ test("onResync re-reads paths and the Architect conversation after missed notifi
   }
 });
 
-test("the detailed view floats: it never squeezes the graph, and Close deselects", async () => {
+test("the detailed view floats: it never squeezes the roadmap, and Close deselects", async () => {
   const path = makePath();
   const fixture = createViewFixture({
     paths: [path],
@@ -612,7 +592,7 @@ test("the detailed view floats: it never squeezes the graph, and Close deselects
     await mounted(fixture);
 
     // The inspector is a floating sibling of the body, not a grid column, so
-    // the path graph and the Architect conversation keep their full width.
+    // the roadmap and the Architect conversation keep their full width.
     const body = fixture.root.querySelector<HTMLElement>(".lp-hub-body")!;
     const pane = fixture.root.querySelector<HTMLElement>(".lp-inspector-pane")!;
     assert.notEqual(pane.parentElement, body, "the detailed view is not a body column");
@@ -625,7 +605,7 @@ test("the detailed view floats: it never squeezes the graph, and Close deselects
 
     assert.equal(pane.hidden, true, "closing deselects and hides the floating window");
     assert.ok(!fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId);
-    assert.equal(graphCard(fixture.root, "n-holistic").getAttribute("aria-pressed"), "false");
+    assert.equal(roadmapCard(fixture.root, "n-holistic").getAttribute("aria-pressed"), "false");
 
     // The live app refreshes in the background (notifications, resync). A
     // closed detailed view must stay closed instead of silently reselecting.
@@ -638,11 +618,11 @@ test("the detailed view floats: it never squeezes the graph, and Close deselects
     assert.equal(
       body.querySelectorAll(":scope > *").length,
       2,
-      "the body keeps exactly the graph pane and the Architect pane",
+      "the body keeps exactly the roadmap pane and the Architect pane",
     );
 
     // Reopening via a card click brings the same inspector back.
-    await selectGraphNode(fixture.root, "n-concept");
+    await selectRoadmapCard(fixture.root, "n-concept");
     assert.equal(pane.hidden, false);
     assert.equal(fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId, "n-concept");
   } finally {
@@ -650,7 +630,7 @@ test("the detailed view floats: it never squeezes the graph, and Close deselects
   }
 });
 
-test("an empty hub offers Create a Path and does not invent a graph or inspector node", async () => {
+test("an empty hub offers Create a Path and does not invent a roadmap or inspector node", async () => {
   const fixture = createViewFixture();
   try {
     await mounted(fixture);
@@ -658,9 +638,9 @@ test("an empty hub offers Create a Path and does not invent a graph or inspector
     assert.match(fixture.root.textContent ?? "", /No learning paths yet/);
     assert.match(fixture.root.querySelector<HTMLElement>(".lp-inspector")!.textContent ?? "", /Select a node/);
     assert.equal(
-      fixture.root.querySelectorAll(".lp-graph-card").length,
+      fixture.root.querySelectorAll(".lp-roadmap-card").length,
       0,
-      "no empty graph is drawn without a path",
+      "no empty roadmap is drawn without a path",
     );
     const create = liveButtons(fixture).find((button) => button.props.label === "Create a Path")!;
     await create.props.onClick();

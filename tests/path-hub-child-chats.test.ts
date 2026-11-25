@@ -13,7 +13,7 @@ import {
 } from "../src/session-navigation.ts";
 import { mountPathHub } from "../src/view/path-hub.ts";
 import { makePath } from "./fixtures.ts";
-import { createViewFixture, selectGraphNode } from "./view-host.ts";
+import { createViewFixture, selectRoadmapCard } from "./view-host.ts";
 import type { ViewFixture } from "./view-host.ts";
 
 function fakeHost(fixture: ViewFixture): NativeSessionHost & {
@@ -69,7 +69,7 @@ test("Start Teaching Chat creates, links, stages and opens a native session", as
   try {
     const host = fakeHost(fixture);
     await mounted(fixture, host);
-    selectGraphNode(fixture.root, "n-skill");
+    selectRoadmapCard(fixture.root, "n-skill");
     await fixture.flush();
     assert.equal(inspector(fixture).dataset.nodeId, "n-skill");
 
@@ -100,7 +100,7 @@ test("a deleted native chat is marked missing and can be unlinked without touchi
   try {
     assert.equal(fixture.nativeChats.delete("chat-1"), true);
     await mounted(fixture);
-    selectGraphNode(fixture.root, "n-concept");
+    selectRoadmapCard(fixture.root, "n-concept");
     await fixture.flush();
 
     assert.match(inspector(fixture).textContent ?? "", /Missing native chat/);
@@ -137,7 +137,7 @@ test("Link Existing Session offers only unlinked chats and attaches the chosen o
   });
   try {
     await mounted(fixture);
-    selectGraphNode(fixture.root, "n-skill");
+    selectRoadmapCard(fixture.root, "n-skill");
     await fixture.flush();
 
     await button(fixture, "Link Existing Session…").props.onClick();
