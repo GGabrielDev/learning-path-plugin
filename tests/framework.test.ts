@@ -11,6 +11,7 @@ import {
 import {
   buildArchitectSystemPrompt,
   buildChildSessionBrief,
+  mapRevisitBriefFor,
   microPrimingHookFor,
   resolveNodeArtifact,
 } from "../src/framework.ts";
@@ -284,4 +285,28 @@ test("a valid long goal cannot crowd the source anchor out of graph relevance", 
   });
   assert.match(brief.text, /## Graph context — agent only/);
   assert.match(brief.text, /Velora preserves quantities through reversible transformations/);
+});
+
+test("map revisit briefs cite saved relational maps and fall back to redraw-from-memory without them", () => {
+  const path = { ...makePath(), artifactDefault: null };
+  const artifact = resolveNodeArtifact(path, nodeOf(path, "n-contrast"));
+  const saved = [{ title: "First relational map", addedAt: "2026-02-01T00:00:00.000Z" }];
+
+  // Disabled, non-teaching, skill/bridge nodes and other artifacts stay silent.
+  assert.deepEqual(mapRevisitBriefFor("teaching", "contrast", artifact, false, saved), []);
+  assert.deepEqual(mapRevisitBriefFor("practice", "contrast", artifact, true, saved), []);
+  assert.deepEqual(mapRevisitBriefFor("teaching", "skill", artifact, true, saved), []);
+
+  // No saved maps: the original brief invites the learner to supply one.
+  const withoutSaved = mapRevisitBriefFor("teaching", "contrast", artifact, true);
+  assert.equal(withoutSaved.length, 1);
+  assert.match(withoutSaved[0]!, /supply an earlier map of their choice/);
+
+  // Saved maps are cited by title, read through the bounded tool, still ungated.
+  const withSaved = mapRevisitBriefFor("teaching", "contrast", artifact, true, saved);
+  assert.equal(withSaved.length, 1);
+  assert.match(withSaved[0]!, /"First relational map"/);
+  assert.match(withSaved[0]!, /learning_path_read_workspace_item/);
+  assert.match(withSaved[0]!, /Do not supply an earlier connection or open a saved map before that attempt/);
+  assert.match(withSaved[0]!, /Never scrape transcripts, treat artifactNote as the full map/);
 });
