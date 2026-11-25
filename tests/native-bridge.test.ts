@@ -13,7 +13,7 @@ import path from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ChatRecord } from "learnharness-plugin-api";
 import { openLearningPathStore } from "../src/store.ts";
-import { makePath, AT } from "./fixtures.ts";
+import { makeItem, makePath, AT } from "./fixtures.ts";
 import { createHost } from "./host.ts";
 import type { TestHost } from "./host.ts";
 import { NATIVE_BRIDGE_INSTRUCTIONS } from "../src/native-bridge.ts";
@@ -104,11 +104,11 @@ test("instructions exist, and native tools are injected only for linked chats of
       teaching.map((tool) => tool.name),
       [...LEARNING_PATH_TOOL_NAMES],
     );
-    assert.equal(host.nativeTools("chat-1", "prober").length, 4);
+    assert.equal(host.nativeTools("chat-1", "prober").length, 5);
     assert.deepEqual(host.nativeTools("chat-1", "practice"), [], "teaching chats do not feed practice");
 
     const practice = host.nativeTools("chat-practice", "practice");
-    assert.equal(practice.length, 4);
+    assert.equal(practice.length, 5);
     assert.deepEqual(host.nativeTools("chat-practice", "teacher"), []);
   } finally {
     close(host, directory);
@@ -175,7 +175,7 @@ test("map revisit guidance reaches only enabled relational-map teaching briefs a
 test("deleted native chats stop injection even while the plugin link remains", async () => {
   const { host, directory } = hostWithPath([chat("chat-1")]);
   try {
-    assert.equal(host.nativeTools("chat-1", "teacher").length, 4);
+    assert.equal(host.nativeTools("chat-1", "teacher").length, 5);
     // Keep a turn's tools alive, then delete the host-owned chat.
     const tools = host.nativeTools("chat-1", "teacher");
     assert.equal(host.removeChat("chat-1"), true);
@@ -336,7 +336,7 @@ test("enabled graph context reaches teacher/practice tool briefs and search, nev
     assert.equal(result.isError, false);
     assert.deepEqual(result.details.propositions, [{ id: "prior", statement: proposition.statement }]);
     assert.match(result.text, /never state a connection before the learner has tried/);
-    assert.equal(host.nativeTools("chat-1", "prober").length, 4);
+    assert.equal(host.nativeTools("chat-1", "prober").length, 5);
     const prober = await runTool(host.nativeTools("chat-1", "prober"), "learning_path_get_brief", {});
     assert.equal(prober.text, offBrief.text);
     assert.deepEqual(host.nativeTools("unlinked", "teacher"), []);
@@ -362,7 +362,7 @@ test("graph context safely falls back and stale tools cannot read after disablin
     const baseline = await runTool(baseTools, "learning_path_get_brief", {});
     await host.call("settings.save", { artifactDefaults: {}, graphContextEnabled: true });
     const tools = host.nativeTools("chat-1", "teacher");
-    assert.equal(tools.length, 5);
+    assert.equal(tools.length, 6);
     for (const fallback of ["empty", "throw", "missing"] as const) {
       mode = fallback;
       assert.deepEqual(host.nativeTools("chat-1", "teacher").map(t => t.name), baseTools.map(t => t.name));
@@ -475,4 +475,125 @@ test("graph briefs and search exclude current-chat-only evidence before ranking 
     const search = await runTool(tools, "learning_path_search_graph", { query: "concurrency parallelism" });
     assert.deepEqual((search.details.propositions as { id: string }[]).map(entry => entry.id), ["imported", "mixed", "other", "unknown"]);
   } finally { close(host, directory); }
+});
+
+test("the workspace read tool serves bounded UTF-16 windows and the brief lists titles only", async () => {
+  const directory = temporaryDirectory();
+  const store = openLearningPathStore(directory);
+  store.savePath(makePath());
+  const markdown = "x".repeat(30_000) + "THE-TAIL";
+  const saved = store.saveWorkspaceItem(
+    "path-linear-algebra",
+    makeItem({ links: [{ to: "n-skill", rel: "informs" }] }),
+    markdown,
+  );
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-skill", "practice")] });
+  try {
+    await host.call("sessions.link", {
+      pathId: "path-linear-algebra",
+      nodeId: "n-skill",
+      chatId: "chat-skill",
+      kind: "practice",
+    });
+    const tools = host.nativeTools("chat-skill", "practice");
+    assert.deepEqual(
+      tools.map((tool) => tool.name),
+      [...LEARNING_PATH_TOOL_NAMES],
+      "the read tool ships with the standard linked-session loadout",
+    );
+
+    const first = await runTool(tools, "learning_path_read_workspace_item", { itemId: saved.id });
+    assert.equal(first.isError, false);
+    assert.equal(first.details.totalCharacters, markdown.length);
+    assert.equal(first.details.chunkStart, 0);
+    assert.equal((first.details.chunkEnd as number) > 0, true);
+    const chunkEnd = first.details.chunkEnd as number;
+    assert.equal(first.details.nextOffset, chunkEnd);
+    assert.equal((first.details.text as string).length, chunkEnd);
+
+    const window = await runTool(tools, "learning_path_read_workspace_item", {
+      itemId: saved.id,
+      offset: chunkEnd,
+      limit: 100,
+    });
+    assert.equal(window.details.chunkStart, chunkEnd);
+    assert.equal(window.details.text, markdown.slice(chunkEnd, chunkEnd + 100));
+
+    // The window past the end clamps and reports nextOffset null.
+    const tail = await runTool(tools, "learning_path_read_workspace_item", {
+      itemId: saved.id,
+      offset: markdown.length - 8,
+      limit: 20_000,
+    });
+    assert.equal(tail.details.text, "THE-TAIL");
+    assert.equal(tail.details.nextOffset, null);
+
+    const unknown = await runTool(tools, "learning_path_read_workspace_item", {
+      itemId: "11111111-1111-1111-1111-111111111111",
+    });
+    assert.equal(unknown.isError, true);
+    assert.match(unknown.text, /Unknown workspace item/);
+    assert.match(unknown.text, new RegExp(saved.id), "the error lists the known items");
+
+    const badOffset = await runTool(tools, "learning_path_read_workspace_item", {
+      itemId: saved.id,
+      offset: -1,
+    });
+    assert.match(badOffset.text, /offset must be a non-negative integer/);
+
+    // The brief lists the material by kind and title only; content stays behind the tool.
+    const brief = await runTool(tools, "learning_path_get_brief", {});
+    assert.match(brief.text, /## Learner workspace material/);
+    assert.match(brief.text, /- note: Feynman notes on vector spaces/);
+    assert.doesNotMatch(brief.text, new RegExp(markdown.slice(0, 40)), "content never enters the brief");
+    assert.doesNotMatch(brief.text, new RegExp(saved.id), "the brief carries titles, not ids");
+  } finally {
+    close(host, directory);
+  }
+});
+
+test("the workspace read tool stops for unlinked chats, deletions and file-less items", async () => {
+  const directory = temporaryDirectory();
+  const store = openLearningPathStore(directory);
+  store.savePath(makePath());
+  store.saveSource({ name: "paper.md", markdown: "source body" });
+  store.saveWorkspaceItem(
+    "path-linear-algebra",
+    {
+      kind: "source",
+      title: "A paper",
+      addedBy: "learner",
+      sourceId: store.sources()[0]!.sourceId,
+      links: [{ to: "n-skill", rel: "grounds" }],
+    },
+  );
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-skill", "practice")] });
+  try {
+    await host.call("sessions.link", {
+      pathId: "path-linear-algebra",
+      nodeId: "n-skill",
+      chatId: "chat-skill",
+      kind: "practice",
+    });
+    const tools = host.nativeTools("chat-skill", "practice");
+    const sourceItem = store.workspace("path-linear-algebra")!.items[0]!;
+    const source = await runTool(tools, "learning_path_read_workspace_item", { itemId: sourceItem.id });
+    assert.match(source.text, /no readable content file/);
+
+    await host.call("sessions.unlink", {
+      pathId: "path-linear-algebra",
+      nodeId: "n-skill",
+      chatId: "chat-skill",
+    });
+    const afterUnlink = await runTool(tools, "learning_path_read_workspace_item", {
+      itemId: "11111111-1111-1111-1111-111111111111",
+    });
+    assert.match(afterUnlink.text, /no longer linked to a Learning Path node/);
+
+    host.removeChat("chat-skill");
+    const afterDelete = await runTool(tools, "learning_path_read_workspace_item", { itemId: sourceItem.id });
+    assert.match(afterDelete.text, /no longer exists/);
+  } finally {
+    close(host, directory);
+  }
 });
