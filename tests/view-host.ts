@@ -812,8 +812,9 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
           title: String(value.title),
           addedAt: "2026-02-01T00:00:00.000Z",
           addedBy: "learner",
-          links:
-            value.nodeId === undefined || value.nodeId === null
+          links: Array.isArray(value.links)
+            ? (structuredClone(value.links) as WorkspaceItem["links"])
+            : value.nodeId === undefined || value.nodeId === null
               ? []
               : [
                   {
@@ -824,6 +825,19 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
         };
         workspaceItems.push({ item, content: String(value.markdown) });
         return Promise.resolve({ item: structuredClone(item) } as T);
+      }
+      case "workspace.readItem": {
+        if (String(value.pathId) !== workspacePathId) {
+          return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));
+        }
+        const entry = workspaceItems.find((candidate) => candidate.item.id === String(value.itemId));
+        if (!entry) {
+          return Promise.reject(new Error(`Unknown workspace item: ${String(value.itemId)}`));
+        }
+        return Promise.resolve({
+          item: structuredClone(entry.item),
+          content: entry.item.kind === "source" ? null : entry.content,
+        } as T);
       }
       case "workspace.updateItemMeta": {
         const index = workspaceItems.findIndex((entry) => entry.item.id === String(value.itemId));

@@ -29,8 +29,7 @@ import type { ChildSessionKind } from "../domain.ts";
 import type { SessionStatus } from "../session-types.ts";
 import { createErrorLedger } from "./error-ledger.ts";
 import type { ErrorLedgerChange } from "./error-ledger.ts";
-import { createWorkspaceLedger } from "./workspace-ledger.ts";
-import type { AddNoteInput, WorkspaceLedger } from "./workspace-ledger.ts";
+
 import { createPivotBanner } from "./pivot-banner.ts";
 import type { PivotDecision } from "./pivot-banner.ts";
 import {
@@ -63,14 +62,9 @@ export interface NodeInspectorOptions {
   updateNode(change: NodeInspectorChange): void | Promise<void>;
   /** Resolve/unresolve one ledger entry or edit its reflection note. */
   updateError(errorId: string, change: ErrorLedgerChange): void | Promise<void>;
-  /** Save a learner note into the path's workspace (workspace.saveNote). */
-  saveWorkspaceNote(input: AddNoteInput): void | Promise<void>;
-  /** Link one workspace item to the inspected node. */
-  linkWorkspaceItem(itemId: string): void | Promise<void>;
-  /** Remove the inspected node's link from one workspace item. */
-  unlinkWorkspaceItem(itemId: string): void | Promise<void>;
-  /** Delete one workspace item and its content file. */
-  deleteWorkspaceItem(itemId: string): void | Promise<void>;
+  /** Open or close the floating workspace ledger pane. The inspector itself
+   * carries only this one affordance; the pane does the rest. */
+  toggleWorkspace(): void;
   /** Accept or dismiss one advisory pivot proposal. */
   decidePivot(pivotId: string, decision: PivotDecision): void | Promise<void>;
   /** Hand a pivot diagnosis to the Architect for discussion. */
@@ -128,14 +122,6 @@ export function createNodeInspector(
     update: options.updateError,
     selectNode: options.selectNode,
   });
-  const workspaceContainer = element(document, "div", "lp-workspace-host");
-  const workspaceLedger = createWorkspaceLedger(ctx, workspaceContainer, signal, {
-    saveNote: options.saveWorkspaceNote,
-    linkItem: options.linkWorkspaceItem,
-    unlinkItem: options.unlinkWorkspaceItem,
-    deleteItem: options.deleteWorkspaceItem,
-  });
-
   let handles: PluginWidgetHandle<unknown>[] = [];
   let disposed = false;
 
@@ -332,13 +318,13 @@ export function createNodeInspector(
     const chatActions = element(document, "div", "lp-chat-actions");
     button(chatActions, "Start Teaching Chat", () => {
       void options.startSession("teaching");
-    }, { variant: "default" });
+    }, { variant: "default", size: "sm" });
     button(chatActions, "Start Practice Chat", () => {
       void options.startSession("practice");
-    }, { variant: "outline" });
+    }, { variant: "outline", size: "sm" });
     button(chatActions, "Link Existing Session…", () => {
       void options.linkExistingSession();
-    }, { variant: "ghost" });
+    }, { variant: "ghost", size: "sm" });
     chats.append(chatActions);
 
     if (node.childSessions.length === 0) {
@@ -425,9 +411,28 @@ export function createNodeInspector(
       chats.append(list);
     }
 
+    // One calm affordance instead of an inline list: the ledger lives in the
+    // floating pane (live-review override), so the inspector stays light.
     const workspace = section("Workspace");
-    workspace.append(workspaceContainer);
-    workspaceLedger.render(path, node, workspaceManifest);
+    const workspaceOpen = element(document, "div", "lp-workspace-open");
+    const itemCount = workspaceManifest?.items.length ?? 0;
+    button(
+      workspaceOpen,
+      itemCount === 0
+        ? "Workspace ledger"
+        : `Workspace ledger (${itemCount} item${itemCount === 1 ? "" : "s"})`,
+      () => options.toggleWorkspace(),
+      { variant: "outline", size: "sm" },
+    );
+    workspaceOpen.append(
+      element(
+        document,
+        "p",
+        "lp-muted",
+        "Your notes, artifacts and sources for this path — opens the ledger pane.",
+      ),
+    );
+    workspace.append(workspaceOpen);
   };
 
   return {
@@ -439,7 +444,6 @@ export function createNodeInspector(
         empty();
         pivotBanner.render(null, null);
         errorLedger.render(null, null);
-        workspaceLedger.render(null, null, null);
         return;
       }
       renderSelected(path, node, workspaceManifest);
@@ -450,7 +454,6 @@ export function createNodeInspector(
       clear();
       pivotBanner.dispose();
       errorLedger.dispose();
-      workspaceLedger.dispose();
       root.remove();
     },
   };
