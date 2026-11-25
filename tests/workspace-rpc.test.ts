@@ -528,3 +528,27 @@ test("workspace.saveSource rejects an unknown path and lets the store validate l
     close(host, directory);
   }
 });
+
+test("workspace.openDirectory reveals the path's workspace folder, materializing it on demand", async () => {
+  const { host, directory } = hostWithPath();
+  try {
+    const result = await host.call<{ directory: string }>("workspace.openDirectory", {
+      pathId: "path-linear-algebra",
+    });
+    assert.ok(
+      result.directory.startsWith(path.join(directory, WORKSPACES_DIRECTORY)),
+      "the revealed folder is the path's own workspace directory",
+    );
+    assert.equal(fs.lstatSync(result.directory).isDirectory(), true, "an empty workspace materializes on demand");
+    assert.deepEqual(host.openedDirectories, [result.directory], "the opener runs exactly once for the right folder");
+
+    await assert.rejects(
+      host.call("workspace.openDirectory", { pathId: "path-missing" }),
+      /Unknown path: path-missing/,
+      "an unknown path opens nothing",
+    );
+    assert.equal(host.openedDirectories.length, 1, "a refused path never reaches the opener");
+  } finally {
+    close(host, directory);
+  }
+});

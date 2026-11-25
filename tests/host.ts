@@ -84,6 +84,9 @@ export interface TestHost {
   readonly unregistered: string[];
   readonly abortedCalls: string[];
   readonly events: EmittedEvent[];
+  /** Workspace directories the openDirectory RPC revealed (test seam records
+   * instead of spawning a GUI file manager). */
+  readonly openedDirectories: string[];
   readonly controller: AbortController;
   call<T = unknown>(name: string, input?: unknown): Promise<T>;
   tool(name: string): NonNullable<PluginAgentDefinition["tools"]>[number];
@@ -101,6 +104,9 @@ export interface HostOptions {
   readonly chats?: readonly ChatRecord[];
   /** Public graph boundary: no model requests or host graph writes. */
   readonly graph?: () => readonly GraphNode[];
+  /** Replace the file-manager opener behind workspace.openDirectory; the
+   * default records into `openedDirectories` and spawns nothing. */
+  readonly openInFileManager?: (directory: string) => Promise<void>;
 }
 
 export function createHost(options: HostOptions = {}): TestHost {
@@ -122,6 +128,7 @@ export function createHost(options: HostOptions = {}): TestHost {
   const unregistered: string[] = [];
   const abortedCalls: string[] = [];
   const events: EmittedEvent[] = [];
+  const openedDirectories: string[] = [];
   let sequence = 0;
 
   const now = (): string => new Date().toISOString();
@@ -295,7 +302,13 @@ export function createHost(options: HostOptions = {}): TestHost {
     },
   } as unknown as PluginBackendContext;
 
-  activate(ctx);
+  activate(ctx, {
+    openInFileManager:
+      options.openInFileManager ??
+      (async (directory: string) => {
+        openedDirectories.push(directory);
+      }),
+  });
 
   return {
     ctx,
@@ -310,6 +323,7 @@ export function createHost(options: HostOptions = {}): TestHost {
     unregistered,
     abortedCalls,
     events,
+    openedDirectories,
     controller,
     async call<T>(name: string, input?: unknown): Promise<T> {
       const handler = handlers.get(name);

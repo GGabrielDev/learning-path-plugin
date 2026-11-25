@@ -20,11 +20,21 @@
  * (rel `informs` for new links, existing relations preserved) via the existing
  * `workspace.updateItemMeta` links array.
  *
- * Dropped documents: PDF/text files dropped onto the pane are converted
- * through `ctx.documents.toMarkdown` (the Architect pane's pipeline) and filed
- * as node-linked `source` items (rel `grounds`) through one learner write,
- * `workspace.saveSource`. The manifest entry references the global source
- * library's id; content is never copied into the workspace.
+ * Filing documents: the pane carries one visible filing strip — the only
+ * drop target anywhere in the pane — with a native "select from computer…"
+ * picker beside it, so drag-and-drop and picking are one affordance and a
+ * drop aimed at the path surfaces behind the floating pane is never hijacked.
+ * Delivered files are converted through `ctx.documents.toMarkdown` (the
+ * Architect pane's pipeline) and filed as node-linked `source` items (rel
+ * `grounds`) through one learner write, `workspace.saveSource`. The manifest
+ * entry references the global source library's id; content is never copied
+ * into the workspace.
+ *
+ * Reading: item kinds render as small icons (hover carries the word), and an
+ * opened item reads in a bounded, scrolling viewer whose Expand toggle hands
+ * the scroll to the pane body so a long note is never clipped. The pane bar's
+ * Open folder affordance (mounted by the hub, not here) reveals the path's
+ * workspace directory through `workspace.openDirectory`.
  *
  * Learner-only writes. Agents never create, edit, link or delete learner
  * items. Everything rendered here is controlled by the caller (path, node and
@@ -99,6 +109,46 @@ const KIND_LABELS: Readonly<Record<WorkspaceItem["kind"], string>> = {
   code: "Code",
 };
 
+/** One stroke-drawn glyph per item kind (24×24, lucide-style line art). The
+ * label is the hover tooltip and the accessible name, so the ledger rows stay
+ * scannable while nothing is hidden from hover or a screen reader. */
+const KIND_ICON_PATHS: Readonly<Record<WorkspaceItem["kind"], readonly string[]>> = {
+  // A pencil: the learner's own writing.
+  note: ["M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"],
+  // A medal: something a session produced and saved.
+  session_artifact: ["M12 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z", "m9.5 13.2-2 8.8 4.5-2.7 4.5 2.7-2-8.8"],
+  // A document with text lines: converted material.
+  source: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M16 13H8", "M16 17H8"],
+  // A terminal prompt: code the learner wrote.
+  code: ["m16 18 6-6-6-6", "m8 6-6 6 6 6", "M12 19h8"],
+};
+
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+/** A small inline stroke icon; currentColor keeps it on the palette. */
+function svgIcon(document: Document, paths: readonly string[]): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NAMESPACE, "svg") as SVGSVGElement;
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const data of paths) {
+    const line = document.createElementNS(SVG_NAMESPACE, "path");
+    line.setAttribute("d", data);
+    svg.append(line);
+  }
+  return svg;
+}
+
+/** The kind shown as its icon; hover (title) and screen readers read the label. */
+function kindIcon(document: Document, kind: WorkspaceItem["kind"]): HTMLElement {
+  const label = KIND_LABELS[kind] ?? kind;
+  const host = element(document, "span", "lp-kind-icon");
+  host.title = label;
+  host.setAttribute("role", "img");
+  host.setAttribute("aria-label", label);
+  host.append(svgIcon(document, KIND_ICON_PATHS[kind] ?? []));
+  return host;
+}
+
 /** The rel learner filing uses for v1 (see docs/proposals/workspace-manifest.md). */
 export const LEARNER_LINK_REL = "informs";
 
@@ -136,6 +186,10 @@ export function createWorkspacePane(
   let viewerContent: string | null = null;
   let viewerState: "loading" | "loaded" | "error" = "loaded";
   let viewerError = "";
+  /** The learner expanded the open item's viewer: the content's own scroll
+   * cap comes off and the pane body's scroller takes over, so a long note
+   * reads whole instead of scrolling inside a small window. */
+  let viewerExpanded = false;
 
   const clear = (): void => {
     for (const handle of handles.reverse()) handle.dispose();
@@ -497,26 +551,98 @@ export function createWorkspacePane(
     }
   }
 
-  const onDragOver = (event: Event): void => {
-    if (signal.aborted || disposed) return;
-    event.preventDefault();
-    container.classList.add("lp-drop-target");
-  };
-  const onDragLeave = (): void => {
-    container.classList.remove("lp-drop-target");
-  };
-  const onDrop = (event: DragEvent): void => {
-    if (signal.aborted || disposed) return;
-    event.preventDefault();
-    container.classList.remove("lp-drop-target");
-    const files = [...(event.dataTransfer?.files ?? [])].filter(isConvertibleFile);
-    if (files.length === 0 || lastPath === null) return;
-    dropQueue.push(...files);
+  /** Take convertible files from a drop or the native picker and queue them. */
+  const queueFiles = (files: readonly File[]): void => {
+    const convertible = files.filter(isConvertibleFile);
+    if (convertible.length === 0 || lastPath === null) return;
+    dropQueue.push(...convertible);
     void processDropQueue();
   };
-  container.addEventListener("dragover", onDragOver, { signal });
-  container.addEventListener("dragleave", onDragLeave, { signal });
-  container.addEventListener("drop", onDrop as EventListener, { signal });
+
+  /** The one visible drop affordance, scoped so it never clashes with the path
+   * surfaces behind the floating pane: only this strip arms on dragover and
+   * accepts a drop; a file dragged over the roadmap or the pane's list is not
+   * intercepted. The same strip carries the native "select from computer"
+   * picker, so dragging and picking are one filing affordance. */
+  function dropzone(): HTMLElement {
+    const zone = element(document, "div", "lp-workspace-dropzone");
+    const icon = element(document, "span", "lp-workspace-dropzone-icon");
+    icon.append(
+      svgIcon(document, ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M17 8l-5-5-5 5", "M12 3v12"]),
+    );
+    zone.append(
+      icon,
+      element(
+        document,
+        "span",
+        "lp-workspace-dropzone-text",
+        "Drag a PDF or text file here to file it in this workspace.",
+      ),
+    );
+
+    const pickerHost = element(document, "span", "lp-button-host");
+    zone.append(pickerHost);
+    const fileInput = element(document, "input", "lp-file-input");
+    fileInput.type = "file";
+    fileInput.accept = UPLOAD_ACCEPT_TYPES;
+    fileInput.hidden = true;
+    fileInput.setAttribute("aria-label", "Select a PDF or text file from your computer");
+    zone.append(fileInput);
+    handles.push(
+      ctx.ui.mountButton(
+        pickerHost,
+        {
+          label: "Select from computer…",
+          variant: "outline",
+          size: "sm",
+          title: "Pick a PDF or text file to convert and file in this workspace",
+          onClick: () => {
+            if (!signal.aborted && !disposed) fileInput.click();
+          },
+        },
+        { signal },
+      ),
+    );
+    fileInput.addEventListener(
+      "change",
+      () => {
+        if (signal.aborted || disposed) return;
+        queueFiles([...(fileInput.files ?? [])]);
+        fileInput.value = "";
+      },
+      { signal },
+    );
+
+    zone.addEventListener(
+      "dragover",
+      ((event: DragEvent) => {
+        if (signal.aborted || disposed) return;
+        event.preventDefault();
+        event.stopPropagation();
+        zone.classList.add("lp-drop-target");
+      }) as EventListener,
+      { signal },
+    );
+    zone.addEventListener(
+      "dragleave",
+      () => {
+        zone.classList.remove("lp-drop-target");
+      },
+      { signal },
+    );
+    zone.addEventListener(
+      "drop",
+      ((event: DragEvent) => {
+        if (signal.aborted || disposed) return;
+        event.preventDefault();
+        event.stopPropagation();
+        zone.classList.remove("lp-drop-target");
+        queueFiles([...(event.dataTransfer?.files ?? [])]);
+      }) as EventListener,
+      { signal },
+    );
+    return zone;
+  }
 
   /** Open the read-only viewer: the item's content is fetched now, on demand,
    * through `workspace.readItem` — never as part of listing the ledger. */
@@ -526,6 +652,8 @@ export function createWorkspacePane(
     viewerContent = null;
     viewerState = "loading";
     viewerError = "";
+    // A fresh item starts collapsed: its content scrolls inside the viewer.
+    viewerExpanded = false;
     // The caller re-renders after the fetch resolves; the pane paints the
     // loading state immediately so the demand-read is visible.
     void (async () => {
@@ -556,20 +684,43 @@ export function createWorkspacePane(
       viewerItemId = null;
       viewerContent = null;
       viewerState = "loaded";
+      viewerExpanded = false;
       rerender();
     }, { variant: "outline" });
     const meta = element(document, "div", "lp-workspace-viewer-meta");
     meta.append(element(document, "p", "lp-workspace-item-title", item.title));
-    meta.append(element(document, "span", "lp-muted", KIND_LABELS[item.kind] ?? item.kind));
+    meta.append(kindIcon(document, item.kind));
     if (item.kind === "session_artifact" && item.addedBy.startsWith("session:")) {
       meta.append(
         element(document, "span", "lp-muted", `saved by ${item.addedBy.replace(":", " ")}`),
       );
     }
     head.append(meta);
+    // Expandable and scrollable: collapsed, the content scrolls inside a
+    // bounded window; expanded, the cap comes off and the pane scrolls.
+    button(
+      head,
+      viewerExpanded ? "Restore" : "Expand",
+      () => {
+        viewerExpanded = !viewerExpanded;
+        rerender();
+      },
+      {
+        variant: "outline",
+        title: viewerExpanded
+          ? "Fit the item's content back into the pane's scroller"
+          : "Show the full note using the whole pane",
+      },
+    );
     root.append(head);
 
-    const body = element(document, "div", "lp-workspace-viewer-content");
+    const body = element(
+      document,
+      "div",
+      viewerExpanded
+        ? "lp-workspace-viewer-content lp-workspace-viewer-expanded"
+        : "lp-workspace-viewer-content",
+    );
     if (viewerState === "loading") {
       body.append(element(document, "p", "lp-muted", "Loading…"));
     } else if (viewerState === "error") {
@@ -604,7 +755,8 @@ export function createWorkspacePane(
       title: `Open ${item.title}`,
     });
     row.append(title);
-    row.append(element(document, "span", "lp-muted", KIND_LABELS[item.kind] ?? item.kind));
+    // The kind reads as its icon; hover (title) carries the word.
+    row.append(kindIcon(document, item.kind));
     // Honest inventory of where the item is filed; no unread or new state.
     const nodeTitles = item.links.flatMap((link) => {
       const target = path.modules.flatMap((module) => module.nodes).find((candidate) => candidate.id === link.to);
@@ -689,6 +841,11 @@ export function createWorkspacePane(
         { signal },
       ),
     );
+
+    // The one filing affordance for documents: drag-and-drop and the native
+    // picker share this strip, and only it accepts a drop — never the pane's
+    // list, viewer or the path surfaces behind the floating pane.
+    container.append(dropzone());
 
     if (viewerItem !== null) {
       container.append(viewer(viewerItem));

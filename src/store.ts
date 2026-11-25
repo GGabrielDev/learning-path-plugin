@@ -468,6 +468,9 @@ export interface LearningPathStore {
    * it. Links to nodes the path no longer has are dropped at read; the item
    * itself is always kept. */
   workspace(pathId: string): WorkspaceManifest | null;
+  /** Materialize (if absent) and return one path's workspace directory: the
+   * folder the OS file manager can open. Unknown paths are refused. */
+  ensureWorkspaceDirectory(pathId: string): string;
   /** Validate and append one workspace item, materializing the workspace
    * lazily. Content-bearing kinds (note, session_artifact, code) need their
    * Markdown content; kind "source" references the global sources store and
@@ -932,6 +935,14 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
     },
 
     listSourceIds: () => listSourceIdsImpl(),
+
+    /** Materialize (if absent) and return the path's workspace directory: the
+     * folder the OS file manager opens. Refuses unknown paths, like every
+     * other workspace write. */
+    ensureWorkspaceDirectory(pathId) {
+      nodeIdsForPath(pathId);
+      return ensureWorkspaceDirectories(pathId);
+    },
 
     workspace(pathId) {
       const manifest = loadWorkspaceManifest(workspaceManifestFilename(pathId), pathId);

@@ -94,6 +94,14 @@ function workspaceBody(root: HTMLElement): HTMLElement {
   return element;
 }
 
+/** The row's kind reads as an icon; the hover tooltip (title) carries the
+ * word, so nothing about the kind is hidden from hover or a screen reader. */
+function kindIconOf(row: HTMLElement): HTMLElement {
+  const icon = row.querySelector<HTMLElement>(".lp-kind-icon");
+  assert.ok(icon, "the row shows the item's kind as its icon");
+  return icon!;
+}
+
 /** The row's title is itself a mounted button (it opens the viewer), so its
  * text lives in widget props, not in the row's DOM text. */
 function rowTitleButton(fixture: ViewFixture, row: HTMLElement, label: string) {
@@ -197,7 +205,7 @@ test("the pane lists items newest last with honest counts and no unread or new s
       "oldest first, newest last",
     );
     rowTitleButton(fixture, rows[0]!, "Feynman notes on vector spaces");
-    assert.match(rows[0]!.textContent ?? "", /Note/);
+    assert.equal(kindIconOf(rows[0]!).title, "Note", "hovering the kind icon carries the word");
     assert.match(rows[0]!.textContent ?? "", /linked: Node n-skill \(informs\)/);
     assert.match(rows[1]!.textContent ?? "", /unlinked/);
     assert.match(workspaceBody(fixture.root).textContent ?? "", /2 items/);
@@ -287,11 +295,16 @@ test("the viewer is read-only: no composer, no editable surface for item content
       .all("mountStandardComposer")
       .some((record) => paneRoot(fixture.root).contains(record.container));
     assert.equal(composerInPane, false, "no composer is mounted inside the pane");
+    // The filing strip's hidden native picker is an affordance, not an editable
+    // surface for item content: only text-entry fields make the viewer editable.
     assert.equal(
-      workspaceBody(fixture.root).querySelector("textarea, input:not([type='checkbox'])"),
+      workspaceBody(fixture.root).querySelector("textarea, input:not([type='checkbox']):not([type='file'])"),
       null,
       "the viewer carries no editable field",
     );
+    const picker = workspaceBody(fixture.root).querySelector<HTMLElement>("input[type='file']");
+    assert.ok(picker, "the filing strip carries its native file picker");
+    assert.equal(picker!.hidden, true, "the picker is hidden chrome, never editable content");
   } finally {
     clearPathHubTarget();
     fixture.restore();
@@ -320,7 +333,7 @@ test("a source item references the sources store and carries no content read", a
     await fixture.flush();
     await openPane(fixture);
     const row = workspaceBody(fixture.root).querySelector<HTMLElement>(".lp-workspace-row")!;
-    assert.match(row.textContent ?? "", /Source/);
+    assert.equal(kindIconOf(row).title, "Source", "hovering the kind icon carries the word");
     const titleButton = rowTitleButton(fixture, row, "A referenced paper");
     await titleButton.props.onClick();
     await fixture.flush();
@@ -357,7 +370,7 @@ test("session artifacts render in the pane with their originating session", asyn
 
     const row = workspaceBody(fixture.root).querySelector<HTMLElement>(".lp-workspace-row")!;
     assert.ok(row, "the saved artifact appears in the ledger");
-    assert.match(row.textContent ?? "", /Session artifact/);
+    assert.equal(kindIconOf(row).title, "Session artifact", "hovering the kind icon carries the word");
     rowTitleButton(fixture, row, "Saved relational map");
     assert.match(row.textContent ?? "", /saved by session chat-map-1/);
 
@@ -661,18 +674,28 @@ test("dropping a PDF onto the pane converts it and files it as a node-linked sou
     selectRoadmapCard(root, "n-skill");
     await openPane(fixture);
     const body = root.querySelector<HTMLElement>(".lp-workspace-body")!;
+    const zone = root.querySelector<HTMLElement>(".lp-workspace-dropzone")!;
+    assert.ok(zone, "the pane carries its visible filing strip");
 
-    // The pane must allow the drop: dragover is prevented so the browser
-    // delivers it, and the pane shows the armed state while hovering.
-    const over = dropEvent(body.ownerDocument, [], "dragover");
-    body.dispatchEvent(over);
-    assert.equal(over.defaultPrevented, true, "the pane accepts a drop");
-    assert.ok(body.classList.contains("lp-drop-target"), "the armed state is visible");
+    // Drops belong to the filing strip only: a file dragged over the pane's
+    // list is not intercepted, so it never clashes with a drop aimed at the
+    // path surfaces behind the floating pane.
+    const strayOver = dropEvent(body.ownerDocument, [], "dragover");
+    body.dispatchEvent(strayOver);
+    assert.equal(strayOver.defaultPrevented, false, "the pane body does not take a drop");
+    assert.ok(!body.classList.contains("lp-drop-target") && !zone.classList.contains("lp-drop-target"), "nothing arms outside the filing strip");
+
+    // The strip must allow the drop: dragover is prevented so the browser
+    // delivers it, and the strip shows the armed state while hovering.
+    const over = dropEvent(zone.ownerDocument, [], "dragover");
+    zone.dispatchEvent(over);
+    assert.equal(over.defaultPrevented, true, "the filing strip accepts a drop");
+    assert.ok(zone.classList.contains("lp-drop-target"), "the armed state is visible");
 
     const file = new File(["%PDF-1.4 pretend bytes"], "paper.pdf", { type: "application/pdf" });
-    body.dispatchEvent(dropEvent(body.ownerDocument, [file], "drop"));
+    zone.dispatchEvent(dropEvent(zone.ownerDocument, [file], "drop"));
     await fixture.flush();
-    assert.ok(!body.classList.contains("lp-drop-target"), "the armed state clears on drop");
+    assert.ok(!zone.classList.contains("lp-drop-target"), "the armed state clears on drop");
 
     const dialog = fixture.all("openDialog").at(-1)!;
     assert.match(String(dialog.props.title), /paper\.pdf/, "the filing dialog opens for the dropped file");
@@ -711,13 +734,13 @@ test("a dropped file the converter cannot take surfaces the error and saves noth
     const root = await mounted(fixture);
     selectRoadmapCard(root, "n-skill");
     await openPane(fixture);
-    const body = root.querySelector<HTMLElement>(".lp-workspace-body")!;
+    const zone = root.querySelector<HTMLElement>(".lp-workspace-dropzone")!;
     fixture.toMarkdown = async () => {
       throw new Error("Only UTF-8 text or a valid PDF can be converted.");
     };
 
     const file = new File(["%PDF-1.4 broken"], "broken.pdf", { type: "application/pdf" });
-    body.dispatchEvent(dropEvent(body.ownerDocument, [file], "drop"));
+    zone.dispatchEvent(dropEvent(zone.ownerDocument, [file], "drop"));
     await fixture.flush();
 
     const error = root.querySelector<HTMLElement>(".lp-dialog-error");
@@ -744,15 +767,15 @@ test("a dropped file type outside the converter is ignored, and cancelling write
     const root = await mounted(fixture);
     selectRoadmapCard(root, "n-skill");
     await openPane(fixture);
-    const body = root.querySelector<HTMLElement>(".lp-workspace-body")!;
+    const zone = root.querySelector<HTMLElement>(".lp-workspace-dropzone")!;
 
     const image = new File(["png"], "picture.png", { type: "image/png" });
-    body.dispatchEvent(dropEvent(body.ownerDocument, [image], "drop"));
+    zone.dispatchEvent(dropEvent(zone.ownerDocument, [image], "drop"));
     await fixture.flush();
     assert.equal(fixture.all("openDialog").length, 0, "an unconvertible file opens no dialog");
 
     const file = new File(["# Notes"], "notes.md", { type: "text/markdown" });
-    body.dispatchEvent(dropEvent(body.ownerDocument, [file], "drop"));
+    zone.dispatchEvent(dropEvent(zone.ownerDocument, [file], "drop"));
     await fixture.flush();
     assert.equal(fixture.all("openDialog").length, 1, "a markdown drop opens the filing dialog");
     fixture.all("openDialog").at(-1)!.handle.dispose();
@@ -760,6 +783,109 @@ test("a dropped file type outside the converter is ignored, and cancelling write
     assert.equal(fixture.calls.filter((call) => call.name === "workspace.saveSource").length, 0);
     assert.equal(fixture.uploaded.length, 0, "cancelling files nothing");
   } finally {
+    fixture.restore();
+  }
+});
+
+test("Select from computer files a picked document through the same filing dialog", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    const root = await mounted(fixture);
+    selectRoadmapCard(root, "n-skill");
+    await openPane(fixture);
+    const zone = root.querySelector<HTMLElement>(".lp-workspace-dropzone")!;
+    const input = zone.querySelector<HTMLInputElement>("input[type='file']")!;
+    assert.ok(input, "the filing strip carries the native picker");
+
+    const file = new File(["# Picked notes"], "picked.md", { type: "text/markdown" });
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    fire(input, "change");
+    await fixture.flush();
+
+    const dialog = fixture.all("openDialog").at(-1)!;
+    assert.match(String(dialog.props.title), /picked\.md/, "the picked file opens the filing dialog");
+    await fixture.flush();
+    await saveButton(fixture).props.onClick();
+    await fixture.flush();
+    await fixture.flush();
+
+    const call = calls(fixture, "workspace.saveSource").at(-1);
+    assert.deepEqual(call?.input, {
+      pathId: "path-linear-algebra",
+      name: "picked.md",
+      markdown: "# picked.md\n\nConverted text.",
+      links: [{ to: "n-skill", rel: "grounds" }],
+    }, "one learner write files the picked document like a dropped one");
+  } finally {
+    clearPathHubTarget();
+    fixture.restore();
+  }
+});
+
+test("the note viewer is expandable and scrollable, and Expand hands the scroll to the pane", async () => {
+  const path = makePath();
+  const longBody = `# Long note\n\n${"paragraph of the learner's own writing.\n\n".repeat(40)}`;
+  const fixture = createViewFixture({
+    paths: [path],
+    workspaceItems: [{ item: initialItem(), content: longBody }],
+  });
+  try {
+    await mounted(fixture);
+    selectRoadmapCard(fixture.root, "n-skill");
+    await openPane(fixture);
+    const row = workspaceBody(fixture.root).querySelector<HTMLElement>(".lp-workspace-row")!;
+    await rowTitleButton(fixture, row, "Feynman notes on vector spaces").props.onClick();
+    await fixture.flush();
+    await fixture.flush();
+
+    const content = workspaceBody(fixture.root).querySelector<HTMLElement>(".lp-workspace-viewer-content")!;
+    assert.ok(content, "the viewer renders the note's own content region");
+    assert.ok(!content.classList.contains("lp-workspace-viewer-expanded"), "the note starts in its bounded, scrolling window");
+
+    const paneButtons = (label: string) =>
+      fixture.all("mountButton").filter((record) => record.props.label === label && paneRoot(fixture.root).contains(record.container));
+    const expand = paneButtons("Expand")[0]!;
+    assert.ok(expand, "the viewer offers Expand");
+    await expand.props.onClick();
+    await fixture.flush();
+    assert.ok(
+      workspaceBody(fixture.root).querySelector(".lp-workspace-viewer-content")!.classList.contains("lp-workspace-viewer-expanded"),
+      "expanded, the window cap comes off and the pane's scroller carries the full note",
+    );
+    const restore = paneButtons("Restore")[0]!;
+    assert.ok(restore, "the viewer offers Restore");
+    await restore.props.onClick();
+    await fixture.flush();
+    assert.ok(
+      !workspaceBody(fixture.root).querySelector(".lp-workspace-viewer-content")!.classList.contains("lp-workspace-viewer-expanded"),
+      "restored, the bounded window is back",
+    );
+  } finally {
+    clearPathHubTarget();
+    fixture.restore();
+  }
+});
+
+test("Open folder reveals the selected path's workspace through the learner's file manager", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    await mounted(fixture);
+    selectRoadmapCard(fixture.root, "n-skill");
+    await openPane(fixture);
+
+    const openFolder = fixture
+      .all("mountButton")
+      .find((record) => record.props.label === "Open folder");
+    assert.ok(openFolder, "the pane bar carries the Open folder affordance");
+    await openFolder!.props.onClick();
+    await fixture.flush();
+
+    const opened = fixture.calls.filter((call) => call.name === "workspace.openDirectory");
+    assert.deepEqual(opened.at(-1)?.input, { pathId: "path-linear-algebra" }, "the affordance goes through the backend RPC");
+  } finally {
+    clearPathHubTarget();
     fixture.restore();
   }
 });

@@ -263,11 +263,59 @@
 }
 
 /* A dropped document is filing material: the armed state reads as "you can let
-   go here", not as an inbox or a dropzone decoration. */
-.lp-workspace-body.lp-drop-target {
-  outline: 2px dashed var(--primary, #6366f1);
-  outline-offset: -2px;
+   go here", not as an inbox or a dropzone decoration. Only the filing strip
+   below arms (and takes the drop); the pane's list, the viewer and the path
+   surfaces behind the floating pane never do. */
+.lp-workspace-dropzone {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border, #d4d4d8);
   border-radius: 8px;
+  color: var(--muted, #71717a);
+}
+
+.lp-workspace-dropzone-icon {
+  display: inline-flex;
+  color: var(--muted, #71717a);
+}
+
+.lp-workspace-dropzone-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.lp-workspace-dropzone-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.lp-workspace-dropzone.lp-drop-target {
+  border-color: var(--primary, #6366f1);
+  border-style: solid;
+  color: var(--primary, #6366f1);
+  background: color-mix(in srgb, var(--primary, #6366f1) 6%, transparent);
+}
+
+/* Item kinds read as icons; the hover tooltip (title) carries the word. */
+.lp-kind-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--muted, #71717a);
+  cursor: default;
+}
+
+.lp-kind-icon svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .lp-workspace-source-status {
@@ -362,6 +410,18 @@
 .lp-workspace-viewer-content {
   min-height: 0;
   overflow-wrap: anywhere;
+  /* Scrollable, not squashed: the note reads inside a bounded window first. */
+  max-height: min(52vh, 34rem);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* Expanded: the window cap comes off and the pane's own scroller carries the
+   full note instead, so nothing is left unreachable. */
+.lp-workspace-viewer-content.lp-workspace-viewer-expanded {
+  max-height: none;
+  overflow-y: visible;
+  padding-right: 0;
 }
 
 .lp-workspace-viewer-markdown p:first-child {

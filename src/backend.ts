@@ -16,6 +16,7 @@
  * runs, `cleanup` releases handlers, subscriptions, the bridge and the definition,
  * and no tool writes after the signal aborts.
  */
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type {
   ModelCatalogResponse,
@@ -334,7 +335,45 @@ function updateNodeInPath(
   };
 }
 
-export function activate(ctx: PluginBackendContext): void {
+/** The OS file-manager command per platform; every other platform falls back
+ * to the freedesktop opener. Exported for documentation and tests. */
+const PLATFORM_FILE_MANAGERS: Readonly<Partial<Record<NodeJS.Platform, string>>> = {
+  darwin: "open",
+  win32: "explorer",
+};
+const FALLBACK_FILE_MANAGER = "xdg-open";
+
+/** Reveal one directory in the host OS's file manager. The child is detached
+ * and unref'd so the backend never waits on a GUI window; a missing opener
+ * rejects so the frontend can surface the failure. */
+export async function revealInFileManager(directory: string): Promise<void> {
+  const command = PLATFORM_FILE_MANAGERS[process.platform] ?? FALLBACK_FILE_MANAGER;
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, [directory], { detached: true, stdio: "ignore" });
+    child.once("error", (problem) => {
+      reject(
+        new Error(
+          `Could not open the file manager (${command}): ${
+            problem instanceof Error ? problem.message : String(problem)
+          }`,
+        ),
+      );
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+/** Optional activation seams, so tests never spawn a real GUI process. */
+export interface BackendActivationOptions {
+  /** Replace the OS file-manager opener behind workspace.openDirectory. */
+  readonly openInFileManager?: (directory: string) => Promise<void>;
+}
+
+export function activate(ctx: PluginBackendContext, options: BackendActivationOptions = {}): void {
+  const openInFileManager = options.openInFileManager ?? revealInFileManager;
   const store: LearningPathStore = openLearningPathStore(ctx.dataDirectory);
   const disposers: (() => void)[] = [];
   const watchers = new Map<string, () => void>();
@@ -1022,6 +1061,19 @@ export function activate(ctx: PluginBackendContext): void {
     const deleted = store.deleteWorkspaceItem(pathId, itemId);
     if (deleted) emit(EVENT_WORKSPACE_CHANGED, { pathId, itemId, deleted: true });
     return { deleted };
+  });
+
+  // Open the path's workspace folder in the host OS file manager. The folder
+  // materializes on demand so an empty workspace opens too; the manifest and
+  // content files stay learner material, never agent-visible data.
+  handle("workspace.openDirectory", async (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "workspace.openDirectory");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    const directory = store.ensureWorkspaceDirectory(pathId);
+    await openInFileManager(directory);
+    return { directory };
   });
 
   // ---- Child sessions -----------------------------------------------------

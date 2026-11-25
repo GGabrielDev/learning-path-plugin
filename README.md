@@ -152,9 +152,12 @@ Knowledge Graph records.
    Documents come in through the same conversion pipeline wherever you are:
    **Add to workspace** beside the Architect's upload converts a PDF or text
    file and files it in the selected path's Workspace, linked `grounds` to the
-   nodes you pick; or drop PDF/text files onto the Workspace ledger pane. The
-   document is stored once in your source library — hash-deduplicated — and
-   the Workspace entry references it; nothing is copied into the workspace.
+   nodes you pick; or drop files onto the Workspace pane's filing strip (its
+   **Select from computer…** button opens the same flow for a picked file).
+   Only the strip takes a drop — the pane's list and the path surfaces behind
+   it never do, so the two drop intents never clash. The document is stored
+   once in your source library — hash-deduplicated — and the Workspace entry
+   references it; nothing is copied into the workspace.
    The Architect's refinement context lists node-linked material by title only
    and reads a filed document through the same bounded chunk tool it uses for
    any uploaded source.
@@ -294,12 +297,20 @@ never create, edit, link or delete learner items, and saving an artifact is
 never a gate: progression and revisits work identically without one.
 
 Documents are the Workspace's generalized uploads: **Add to workspace** in the
-Architect pane, or a PDF/text file dropped onto the Workspace ledger pane,
-converts the file to Markdown (the same pipeline, with the same notices) and
-files it as a `source` item linked `grounds` to the nodes you pick in the pane's
-node picker. `sources/` stays the single global store — the ledger entry
-references the source's id and never copies content — so re-uploading the same
-file reuses the stored copy and never files it twice.
+Architect pane, or a PDF/text file delivered through the Workspace pane's
+filing strip (dropped there or picked with **Select from computer…**), converts
+the file to Markdown (the same pipeline, with the same notices) and files it as
+a `source` item linked `grounds` to the nodes you pick in the pane's node
+picker. `sources/` stays the single global store — the ledger entry references
+the source's id and never copies content — so re-uploading the same file reuses
+the stored copy and never files it twice.
+
+The pane itself stays honest and navigable: item kinds read as small icons
+(hover carries the word), an opened note renders in a bounded, scrolling viewer
+that **Expand** stretches to the whole pane, and **Open folder** reveals the
+selected path's workspace directory in your computer's file manager
+(`workspace.openDirectory`; the folder materializes on demand, and an empty
+workspace opens too).
 
 ## Project layout
 
@@ -312,7 +323,7 @@ file reuses the stored copy and never files it twice.
 | `src/architect-agent.ts` | Persistent Path Architect definition and server tools |
 | `src/backend.ts` | RPC handlers, events, native bridge and activation lifecycle |
 | `src/view/path-hub.ts` | Path Hub: header, roadmap lanes, Architect pane, Node Inspector |
-| `src/view/workspace-pane.ts` | Workspace ledger pop-out pane: flat list, notes, links, deletion, dropped documents |
+| `src/view/workspace-pane.ts` | Workspace ledger pop-out pane: flat list, kind icons, notes, links, filing strip (drop/pick), expandable viewer, deletion |
 | `src/view/*` | Architect chat, inspector, error ledger, pivots, dialogs, tool cards |
 | `src/settings.ts` | Artifact defaults, graph-tutoring opt-in, Architect model, safe path deletion |
 | `src/graph-context.ts` | Bounded read-only proposition matching and shared graph-tutoring rules |

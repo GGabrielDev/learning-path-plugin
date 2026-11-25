@@ -888,6 +888,12 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
         if (index !== -1) workspaceItems.splice(index, 1);
         return Promise.resolve({ deleted: index !== -1 } as T);
       }
+      case "workspace.openDirectory": {
+        if (String(value.pathId) !== workspacePathId) {
+          return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));
+        }
+        return Promise.resolve({ directory: `/tmp/learning-path/${String(value.pathId)}/workspaces` } as T);
+      }
       default:
         return Promise.reject(new Error(`Unexpected operation: ${name}`));
     }

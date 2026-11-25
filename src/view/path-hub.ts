@@ -219,8 +219,9 @@ export function mountPathHub(
   workspacePaneContainer.hidden = true;
   const workspaceBar = element(document, "div", "lp-inspector-bar");
   workspaceBar.append(element(document, "span", "lp-inspector-bar-title", "Workspace ledger"));
+  const workspaceOpenHost = element(document, "span", "lp-button-host");
   const workspaceCloseHost = element(document, "span", "lp-button-host");
-  workspaceBar.append(workspaceCloseHost);
+  workspaceBar.append(workspaceOpenHost, workspaceCloseHost);
   workspacePaneContainer.append(workspaceBar);
   const workspaceBody = element(document, "div", "lp-workspace-body");
   workspacePaneContainer.append(workspaceBody);
@@ -955,6 +956,25 @@ export function mountPathHub(
     return result.content ?? null;
   }
 
+  /** Reveal the selected path's workspace folder in the host OS file manager
+   * (workspace.openDirectory). A failure surfaces in the hub's error line; a
+   * success opens the folder and changes nothing. */
+  async function openWorkspaceDirectory(pathId: string): Promise<void> {
+    if (disposed || signal.aborted) return;
+    try {
+      await ctx.call("workspace.openDirectory", { pathId });
+      if (disposed || signal.aborted) return;
+      showError(null);
+    } catch (problem) {
+      if (disposed || signal.aborted) return;
+      showError(
+        `Could not open the workspace folder: ${
+          problem instanceof Error ? problem.message : String(problem)
+        }`,
+      );
+    }
+  }
+
   async function deleteWorkspaceItem(itemId: string): Promise<void> {
     if (disposed || signal.aborted || !path) return;
     try {
@@ -1090,6 +1110,22 @@ export function mountPathHub(
     { signal },
   );
   handles.push(inspectorCloseButton);
+
+  const workspaceOpenButton = ctx.ui.mountButton(
+    workspaceOpenHost,
+    {
+      label: "Open folder",
+      variant: "outline",
+      size: "sm",
+      title: "Open this workspace's folder in your computer's file manager",
+      onClick: () => {
+        if (signal.aborted || disposed) return;
+        if (path) void openWorkspaceDirectory(path.id);
+      },
+    },
+    { signal },
+  );
+  handles.push(workspaceOpenButton);
 
   const workspaceCloseButton = ctx.ui.mountButton(
     workspaceCloseHost,
