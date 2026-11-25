@@ -7,7 +7,13 @@
  *   architect.json           chosen Architect model (needed to re-register)
  *   sources/<sourceId>.md    converted learner uploads (UUID names only)
  *   sources/index.json       versioned upload metadata, for hash deduplication
- * Host-reserved `agents/`, `tasks/` and `usage.jsonl` are never read or written.
+ *   workspaces/<pathId>/manifest.json  versioned per-path workspace index
+ *   workspaces/<pathId>/files/<itemId>.md  workspace item content (UUID names)
+ * Workspaces materialize lazily on the first item of a path and are additive:
+ * nothing here is required for paths or settings to round-trip. Only the
+ * explicit `paths.delete` flow removes a workspace directory; nothing else
+ * ever does. Host-reserved `agents/`, `tasks/` and `usage.jsonl` are never
+ * read or written.
  *
  * Writes go to a same-directory temporary file, are fsynced and renamed over the
  * target, so a crash never leaves a half-written store. Reads validate the schema
@@ -19,11 +25,14 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   DomainValidationError,
+  MAX_WORKSPACE_NOTE_BYTES,
   THINKING_LEVELS,
   isSourceId,
   parseLearningPath,
   parsePluginSettings,
   parseUploadedSourceReference,
+  parseWorkspaceItem,
+  parseWorkspaceManifest,
   validateLearningPath,
 } from "./domain.ts";
 import type {
@@ -31,6 +40,8 @@ import type {
   PluginSettings,
   ThinkingLevelName,
   UploadedSourceReference,
+  WorkspaceItem,
+  WorkspaceManifest,
 } from "./domain.ts";
 
 export const STORE_SCHEMA_VERSION = 1;
@@ -41,6 +52,9 @@ export const SETTINGS_FILE = "settings.json";
 export const ARCHITECT_FILE = "architect.json";
 export const SOURCES_DIRECTORY = "sources";
 export const SOURCE_INDEX_FILE = "index.json";
+export const WORKSPACES_DIRECTORY = "workspaces";
+export const WORKSPACE_MANIFEST_FILE = "manifest.json";
+export const WORKSPACE_FILES_DIRECTORY = "files";
 /** Frontend conversion is bounded; this is the backend's own last line of defence. */
 export const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
 
@@ -322,6 +336,58 @@ function loadSourceIndex(directory: string): { sources: UploadedSourceReference[
   return { sources, revision };
 }
 
+/** Resolve one path's workspace directory strictly inside `workspacesDirectory`,
+ * refusing traversal. Workspace ids reuse the path-id pattern: they name a
+ * directory, one per path. */
+function workspaceFilename(workspacesDirectory: string, id: string): string {
+  if (!PATH_ID_PATTERN.test(id) || id.includes("..")) {
+    throw new StoreError("unsafe", `Invalid Learning Path id: ${JSON.stringify(id)}. No data was changed.`);
+  }
+  const base = path.resolve(workspacesDirectory);
+  const filename = path.resolve(base, id);
+  if (!filename.startsWith(`${base}${path.sep}`)) {
+    throw new StoreError(
+      "unsafe",
+      `Refusing to resolve workspace directory outside ${base}: ${filename}. No data was changed.`,
+    );
+  }
+  return filename;
+}
+
+/** Read and validate one workspace manifest; absent file reads as no workspace. */
+function loadWorkspaceManifest(manifestFilename: string, expectedPathId: string): WorkspaceManifest | null {
+  const raw = readJsonFile(manifestFilename);
+  if (raw === undefined) return null;
+  const record = asRecord(raw, manifestFilename);
+  readSchemaVersion(record, manifestFilename);
+  let manifest: WorkspaceManifest;
+  try {
+    manifest = parseWorkspaceManifest(record);
+  } catch (error) {
+    if (!(error instanceof DomainValidationError)) throw error;
+    const issue = error.issues[0];
+    throw new StoreError(
+      "corrupt",
+      `Learning Path data at ${manifestFilename} is corrupt: manifest ${issue?.path ?? ""} ${issue?.message ?? "is invalid"}. No data was changed.`,
+    );
+  }
+  if (manifest.pathId !== expectedPathId) {
+    throw new StoreError(
+      "corrupt",
+      `Learning Path data at ${manifestFilename} is corrupt: manifest pathId "${manifest.pathId}" does not match the directory "${expectedPathId}". No data was changed.`,
+    );
+  }
+  return manifest;
+}
+
+/** Content files are named `<itemId>.md`, so item ids must be UUIDs like sources. */
+function assertWorkspaceItemId(value: unknown): string {
+  if (typeof value !== "string" || !isSourceId(value)) {
+    throw new StoreError("io", "Invalid workspace item ID: expected a UUID.");
+  }
+  return value;
+}
+
 /** Best-effort directory fsync so the rename itself is durable after a crash. */
 function syncDirectory(directory: string): void {
   let descriptor: number | undefined;
@@ -398,6 +464,21 @@ export interface LearningPathStore {
   readSource(sourceId: string): string | null;
   removeSource(sourceId: string): void;
   listSourceIds(): readonly string[];
+  /** The path's workspace manifest, or null before the first item materializes
+   * it. Links to nodes the path no longer has are dropped at read; the item
+   * itself is always kept. */
+  workspace(pathId: string): WorkspaceManifest | null;
+  /** Validate and append one workspace item, materializing the workspace
+   * lazily. Content-bearing kinds (note, session_artifact, code) need their
+   * Markdown content; kind "source" references the global sources store and
+   * carries none. Returns the stored item. */
+  saveWorkspaceItem(pathId: string, value: unknown, content?: string): WorkspaceItem;
+  /** Update only an item's learner-visible metadata: title, caption and links. */
+  updateWorkspaceItemMeta(pathId: string, itemId: string, value: unknown): WorkspaceItem;
+  /** Remove one item and its content file; false when the item is unknown. */
+  deleteWorkspaceItem(pathId: string, itemId: string): boolean;
+  /** Item content verbatim; null for missing items, source items or no file. */
+  readWorkspaceItemContent(pathId: string, itemId: string): string | null;
 }
 
 /**
@@ -413,6 +494,7 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
 
   const pathsDirectory = path.join(directory, PATHS_DIRECTORY);
+  const workspacesDirectory = path.join(directory, WORKSPACES_DIRECTORY);
   const legacyPathsFilename = path.join(directory, LEARNING_PATHS_FILE);
   const backupPathsFilename = path.join(directory, LEARNING_PATHS_BACKUP_FILE);
   const settingsFilename = path.join(directory, SETTINGS_FILE);
@@ -480,6 +562,22 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
 
   const legacyStat = fs.lstatSync(legacyPathsFilename, { throwIfNoEntry: false });
   const legacyState = legacyStat ? loadPathsFile(legacyPathsFilename) : null;
+
+  // `workspaces/` is additive: when present it must be a real directory the
+  // store owns, never a symlink pointing elsewhere.
+  const workspacesStat = fs.lstatSync(workspacesDirectory, { throwIfNoEntry: false });
+  if (workspacesStat?.isSymbolicLink()) {
+    throw new StoreError(
+      "unsafe",
+      `Refusing to follow symlinked Learning Path directory: ${workspacesDirectory}. No data was changed.`,
+    );
+  }
+  if (workspacesStat && !workspacesStat.isDirectory()) {
+    throw new StoreError(
+      "corrupt",
+      `Learning Path workspaces entry is not a directory: ${workspacesDirectory}. No data was changed.`,
+    );
+  }
 
   let settingsState = loadSettingsFile(settingsFilename);
   let architectState = loadArchitectFile(architectFilename);
@@ -569,6 +667,92 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
     atomicWrite(path.join(sourcesDirectory, `${id}.md`), markdown);
   };
 
+  /** Workspace item ids are UUIDs, so `files/<id>.md` stays traversal-free. */
+  const workspaceContentFile = (pathId: string, itemId: string): string =>
+    path.join(workspaceFilename(workspacesDirectory, pathId), WORKSPACE_FILES_DIRECTORY, `${itemId}.md`);
+
+  /** Every directory on a workspace's path must be a real, owned directory. */
+  const ensureWorkspaceDirectories = (pathId: string): string => {
+    const workspacesStat = fs.lstatSync(workspacesDirectory, { throwIfNoEntry: false });
+    if (workspacesStat?.isSymbolicLink()) {
+      throw new StoreError(
+        "unsafe",
+        `Refusing to follow symlinked Learning Path directory: ${workspacesDirectory}. No data was changed.`,
+      );
+    }
+    if (workspacesStat && !workspacesStat.isDirectory()) {
+      throw new StoreError(
+        "corrupt",
+        `Learning Path workspaces entry is not a directory: ${workspacesDirectory}. No data was changed.`,
+      );
+    }
+    const dir = workspaceFilename(workspacesDirectory, pathId);
+    const dirStat = fs.lstatSync(dir, { throwIfNoEntry: false });
+    if (dirStat?.isSymbolicLink()) {
+      throw new StoreError(
+        "unsafe",
+        `Refusing to follow symlinked workspace directory: ${dir}. No data was changed.`,
+      );
+    }
+    if (dirStat && !dirStat.isDirectory()) {
+      throw new StoreError(
+        "corrupt",
+        `Learning Path workspace entry is not a directory: ${dir}. No data was changed.`,
+      );
+    }
+    if (!dirStat) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const filesDirectory = path.join(dir, WORKSPACE_FILES_DIRECTORY);
+    const filesStat = fs.lstatSync(filesDirectory, { throwIfNoEntry: false });
+    if (filesStat?.isSymbolicLink()) {
+      throw new StoreError(
+        "unsafe",
+        `Refusing to follow symlinked workspace directory: ${filesDirectory}. No data was changed.`,
+      );
+    }
+    if (filesStat && !filesStat.isDirectory()) {
+      throw new StoreError(
+        "corrupt",
+        `Learning Path workspace entry is not a directory: ${filesDirectory}. No data was changed.`,
+      );
+    }
+    if (!filesStat) fs.mkdirSync(filesDirectory, { recursive: true, mode: 0o700 });
+    return dir;
+  };
+
+  const workspaceManifestFilename = (pathId: string): string =>
+    path.join(workspaceFilename(workspacesDirectory, pathId), WORKSPACE_MANIFEST_FILE);
+
+  /** Real node ids of one path; also the guard against orphaned workspaces. */
+  const nodeIdsForPath = (pathId: string): Set<string> => {
+    const learningPath = pathsState.find((candidate) => candidate.id === pathId);
+    if (!learningPath) {
+      throw new StoreError("io", `Unknown learning path "${pathId}". No data was changed.`);
+    }
+    return new Set(learningPath.modules.flatMap((module) => module.nodes.map((node) => node.id)));
+  };
+
+  /** Links are validated against real node ids on every write; at read a link
+   * to a node the path no longer has is dropped with the item kept — never
+   * data loss. "space" links are workspace-level and always kept. */
+  const assertLinksResolve = (item: WorkspaceItem, nodeIds: Set<string>): void => {
+    for (const [index, link] of item.links.entries()) {
+      if (link.to !== "space" && !nodeIds.has(link.to)) {
+        throw new DomainValidationError([
+          { path: `item "${item.id}".links[${index}].to`, message: `unknown node id "${link.to}"` },
+        ]);
+      }
+    }
+  };
+
+  const writeWorkspaceManifest = (manifest: WorkspaceManifest): void => {
+    ensureWorkspaceDirectories(manifest.pathId);
+    atomicWrite(workspaceManifestFilename(manifest.pathId), serialize(manifest));
+  };
+
+  /** Content-bearing kinds own a file under `files/`; kind "source" references
+   * the global sources store and must not carry one. */
+  const requiresContentFile = (kind: WorkspaceItem["kind"]): boolean => kind !== "source";
+
   return {
     directory,
 
@@ -611,12 +795,32 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
           `Refusing to delete symlinked Learning Path file: ${filename}. No data was changed.`,
         );
       }
+      // Deleting a path deletes its workspace: one learner decision, guarded by
+      // the explicit flow reaching here. Nothing else ever removes a workspace.
+      const workspaceDirectory = workspaceFilename(workspacesDirectory, id);
+      const workspaceStat = fs.lstatSync(workspaceDirectory, { throwIfNoEntry: false });
+      if (workspaceStat?.isSymbolicLink()) {
+        throw new StoreError(
+          "unsafe",
+          `Refusing to delete symlinked workspace directory: ${workspaceDirectory}. No data was changed.`,
+        );
+      }
+      if (workspaceStat && !workspaceStat.isDirectory()) {
+        throw new StoreError(
+          "corrupt",
+          `Learning Path workspace entry is not a directory: ${workspaceDirectory}. No data was changed.`,
+        );
+      }
       try {
         fs.unlinkSync(filename);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
       syncDirectory(pathsDirectory);
+      if (workspaceStat) {
+        fs.rmSync(workspaceDirectory, { recursive: true, force: true });
+        syncDirectory(workspacesDirectory);
+      }
       pathsState = pathsState.filter((candidate) => candidate.id !== id);
       revisions.delete(id);
       return true;
@@ -728,5 +932,184 @@ export function openLearningPathStore(dataDirectory: string): LearningPathStore 
     },
 
     listSourceIds: () => listSourceIdsImpl(),
+
+    workspace(pathId) {
+      const manifest = loadWorkspaceManifest(workspaceManifestFilename(pathId), pathId);
+      if (!manifest) return null;
+      const learningPath = pathsState.find((candidate) => candidate.id === pathId);
+      const nodeIds = new Set(
+        learningPath?.modules.flatMap((module) => module.nodes.map((node) => node.id)) ?? [],
+      );
+      return {
+        ...manifest,
+        items: manifest.items.map((item) => ({
+          ...item,
+          links: item.links.filter((link) => link.to === "space" || nodeIds.has(link.to)),
+        })),
+      };
+    },
+
+    saveWorkspaceItem(pathId, value, content) {
+      nodeIdsForPath(pathId);
+      const manifestFilename = workspaceManifestFilename(pathId);
+      const manifest = loadWorkspaceManifest(manifestFilename, pathId);
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new StoreError("io", "A workspace item needs an object with kind and title.");
+      }
+      const input = value as Record<string, unknown>;
+      // The store owns id and addedAt when the caller does not supply them;
+      // most items carry no links yet.
+      const parsed = parseWorkspaceItem({
+        ...input,
+        links: input.links ?? [],
+        id: typeof input.id === "string" ? input.id : randomUUID(),
+        addedAt: typeof input.addedAt === "string" ? input.addedAt : new Date().toISOString(),
+      });
+      const items = manifest?.items ?? [];
+      if (items.some((existing) => existing.id === parsed.id)) {
+        throw new StoreError(
+          "io",
+          `Workspace item "${parsed.id}" already exists in path "${pathId}". No data was changed.`,
+        );
+      }
+      const withContent = requiresContentFile(parsed.kind);
+      let item = parsed;
+      if (withContent) {
+        if (typeof content !== "string" || content.length === 0) {
+          throw new StoreError("io", `A ${parsed.kind} workspace item needs non-empty Markdown content.`);
+        }
+        const byteSize = Buffer.byteLength(content, "utf8");
+        if (byteSize > MAX_WORKSPACE_NOTE_BYTES) {
+          throw new StoreError(
+            "io",
+            `Workspace item content is ${byteSize} bytes; the limit is ${MAX_WORKSPACE_NOTE_BYTES}. No data was changed.`,
+          );
+        }
+        // The index describes the file that was actually written.
+        item = { ...parsed, byteSize, sha256: createHash("sha256").update(content, "utf8").digest("hex") };
+      } else if (content !== undefined) {
+        throw new StoreError("io", "A source workspace item references sources/ and carries no content file.");
+      }
+      assertLinksResolve(item, nodeIdsForPath(pathId));
+      if (item.kind === "source" && !isStoredSource(item.sourceId!)) {
+        throw new StoreError(
+          "io",
+          `Workspace source item references unknown source "${item.sourceId}". No data was changed.`,
+        );
+      }
+      // Revalidating the whole manifest enforces the 300-item cap and every
+      // other workspace invariant on the exact bytes about to be written.
+      const nextManifest = parseWorkspaceManifest({
+        schemaVersion: STORE_SCHEMA_VERSION,
+        pathId,
+        updatedAt: new Date().toISOString(),
+        items: [...items, item],
+      });
+      ensureWorkspaceDirectories(pathId);
+      if (withContent) {
+        atomicWrite(workspaceContentFile(pathId, item.id), content!);
+      }
+      writeWorkspaceManifest(nextManifest);
+      return item;
+    },
+
+    updateWorkspaceItemMeta(pathId, itemId, value) {
+      nodeIdsForPath(pathId);
+      assertWorkspaceItemId(itemId);
+      const manifestFilename = workspaceManifestFilename(pathId);
+      const manifest = loadWorkspaceManifest(manifestFilename, pathId);
+      if (!manifest) {
+        throw new StoreError("io", `Path "${pathId}" has no workspace yet. No data was changed.`);
+      }
+      const index = manifest.items.findIndex((candidate) => candidate.id === itemId);
+      if (index === -1) {
+        throw new StoreError(
+          "io",
+          `Workspace item "${itemId}" not found in path "${pathId}". No data was changed.`,
+        );
+      }
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new StoreError("io", "Workspace item metadata needs an object.");
+      }
+      const allowed = ["title", "caption", "links"];
+      const unexpected = Object.keys(value).filter((key) => !allowed.includes(key));
+      if (unexpected.length > 0) {
+        throw new StoreError(
+          "io",
+          `Workspace item metadata accepts only ${allowed.join(", ")}; got ${unexpected.join(", ")}. No data was changed.`,
+        );
+      }
+      const input = value as Record<string, unknown>;
+      const current = manifest.items[index]!;
+      // An explicit null caption clears it; nothing else may unset a field.
+      const candidate: Record<string, unknown> = { ...current };
+      for (const key of allowed) {
+        if (!(key in input)) continue;
+        if (key === "caption" && input.caption === null) {
+          delete candidate.caption;
+          continue;
+        }
+        candidate[key] = input[key];
+      }
+      const updated = parseWorkspaceItem(candidate);
+      assertLinksResolve(updated, nodeIdsForPath(pathId));
+      const nextManifest = parseWorkspaceManifest({
+        schemaVersion: STORE_SCHEMA_VERSION,
+        pathId,
+        updatedAt: new Date().toISOString(),
+        items: manifest.items.map((entry, position) => (position === index ? updated : entry)),
+      });
+      writeWorkspaceManifest(nextManifest);
+      return updated;
+    },
+
+    deleteWorkspaceItem(pathId, itemId) {
+      assertWorkspaceItemId(itemId);
+      const manifestFilename = workspaceManifestFilename(pathId);
+      const manifest = loadWorkspaceManifest(manifestFilename, pathId);
+      if (!manifest) return false;
+      const index = manifest.items.findIndex((candidate) => candidate.id === itemId);
+      if (index === -1) return false;
+      const item = manifest.items[index]!;
+      const contentFile = workspaceContentFile(pathId, itemId);
+      if (requiresContentFile(item.kind)) {
+        const fileStat = fs.lstatSync(contentFile, { throwIfNoEntry: false });
+        if (fileStat?.isSymbolicLink()) {
+          throw new StoreError("unsafe", `Refusing to delete symlinked workspace file: ${contentFile}.`);
+        }
+      }
+      const nextManifest = parseWorkspaceManifest({
+        schemaVersion: STORE_SCHEMA_VERSION,
+        pathId,
+        updatedAt: new Date().toISOString(),
+        items: manifest.items.filter((_, position) => position !== index),
+      });
+      writeWorkspaceManifest(nextManifest);
+      try {
+        fs.unlinkSync(contentFile);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      syncDirectory(path.dirname(contentFile));
+      return true;
+    },
+
+    readWorkspaceItemContent(pathId, itemId) {
+      assertWorkspaceItemId(itemId);
+      const manifest = loadWorkspaceManifest(workspaceManifestFilename(pathId), pathId);
+      if (!manifest) return null;
+      const item = manifest.items.find((candidate) => candidate.id === itemId);
+      if (!item || item.kind === "source") return null;
+      const filename = workspaceContentFile(pathId, itemId);
+      const fileStat = fs.lstatSync(filename, { throwIfNoEntry: false });
+      if (!fileStat) return null;
+      if (fileStat.isSymbolicLink()) {
+        throw new StoreError("unsafe", `Refusing to follow symlinked workspace file: ${filename}.`);
+      }
+      if (!fileStat.isFile()) {
+        throw new StoreError("corrupt", `Workspace path is not a regular file: ${filename}.`);
+      }
+      return fs.readFileSync(filename, "utf8");
+    },
   };
 }
