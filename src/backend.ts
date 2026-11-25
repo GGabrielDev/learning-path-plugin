@@ -899,7 +899,17 @@ export function activate(ctx: PluginBackendContext): void {
         : readText(value.caption, "caption", { max: 2000, trim: true });
     const nodeId = value.nodeId === undefined ? undefined : readText(value.nodeId, "nodeId", { max: 128 });
     const rel = value.rel === undefined ? "informs" : readLinkRel(value.rel);
-    const links = nodeId === undefined ? [] : [{ to: nodeId, rel }];
+    // The pop-out pane files a note against several nodes at once: an explicit
+    // links array wins when present; nodeId/rel stay the single-node shorthand.
+    // The store validates every link against real node ids on write.
+    if (value.links !== undefined && !Array.isArray(value.links)) {
+      throw new Error("links must be an array.");
+    }
+    const links = value.links === undefined
+      ? nodeId === undefined
+        ? []
+        : [{ to: nodeId, rel }]
+      : value.links;
     const item = store.saveWorkspaceItem(
       pathId,
       {

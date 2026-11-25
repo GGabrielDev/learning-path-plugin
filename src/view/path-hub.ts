@@ -40,8 +40,9 @@ import type { ErrorLedgerChange } from "./error-ledger.ts";
 import { pivotDiscussionPrompt } from "./pivot-banner.ts";
 import type { PivotDecision } from "./pivot-banner.ts";
 import { openLinkExistingSessionDialog } from "./session-dialogs.ts";
-import { LEARNER_LINK_REL } from "./workspace-ledger.ts";
-import type { AddNoteInput } from "./workspace-ledger.ts";
+import { createWorkspacePane } from "./workspace-pane.ts";
+import type { AddNoteInput } from "./workspace-pane.ts";
+import type { WorkspaceItemLink } from "../domain.ts";
 import {
   NODE_TYPE_COLORS,
   NODE_TYPE_LABELS,
@@ -201,6 +202,20 @@ export function mountPathHub(
   inspectorContainer.append(inspectorBar);
   root.append(inspectorContainer);
 
+  // The workspace ledger floats the same way, opened from the inspector's one
+  // Workspace affordance: closable, scrollable, hanging under the header.
+  const workspacePaneContainer = element(document, "aside", "lp-workspace-pane");
+  workspacePaneContainer.setAttribute("aria-label", "Workspace ledger");
+  workspacePaneContainer.hidden = true;
+  const workspaceBar = element(document, "div", "lp-inspector-bar");
+  workspaceBar.append(element(document, "span", "lp-inspector-bar-title", "Workspace ledger"));
+  const workspaceCloseHost = element(document, "span", "lp-button-host");
+  workspaceBar.append(workspaceCloseHost);
+  workspacePaneContainer.append(workspaceBar);
+  const workspaceBody = element(document, "div", "lp-workspace-body");
+  workspacePaneContainer.append(workspaceBody);
+  root.append(workspacePaneContainer);
+
   let summaries: PathSummary[] = [];
   let path: LearningPath | null = null;
   /** The selected path's workspace manifest, or null before the first item. */
@@ -209,6 +224,9 @@ export function mountPathHub(
   let selectedNodeId: string | null = null;
   /** The learner closed the detailed view; refreshes keep it closed. */
   let nodeDeselected = false;
+  /** The learner opened the workspace ledger pane; refreshes keep it open,
+   * closing the detailed view or the pane itself is the explicit close. */
+  let workspaceOpen = false;
   let refineOpen = false;
   /** Path whose Architect conversation was last opened automatically. Background
    * refreshes for the same path never switch away from the conversation in view. */
@@ -254,17 +272,24 @@ export function mountPathHub(
     discussPivot(pivot, node) {
       return discussPivot(pivot, node);
     },
-    saveWorkspaceNote(input) {
+    toggleWorkspace() {
+      workspaceOpen = !workspaceOpen;
+      renderWorkspacePane();
+    },
+  });
+
+  const workspacePane = createWorkspacePane(ctx, workspaceBody, signal, {
+    saveNote(input) {
       return saveWorkspaceNote(input);
     },
-    linkWorkspaceItem(itemId) {
-      return setWorkspaceItemLink(itemId, true);
+    setItemLinks(itemId, links) {
+      return setWorkspaceItemLinks(itemId, links);
     },
-    unlinkWorkspaceItem(itemId) {
-      return setWorkspaceItemLink(itemId, false);
-    },
-    deleteWorkspaceItem(itemId) {
+    deleteItem(itemId) {
       return deleteWorkspaceItem(itemId);
+    },
+    readItem(itemId) {
+      return readWorkspaceItem(itemId);
     },
   });
 
@@ -302,8 +327,12 @@ export function mountPathHub(
     // Closing the detailed view is an explicit learner choice: background
     // refreshes must not silently reselect a node and reopen the window.
     nodeDeselected = nodeId === null;
+    // The pane was opened from the inspector; it closes with the context it
+    // was opened from.
+    if (nodeId === null) workspaceOpen = false;
     applySelection();
     renderInspector();
+    renderWorkspacePane();
   }
 
   /** Dispose every card badge and the roadmap host. Called on each render and
@@ -424,6 +453,23 @@ export function mountPathHub(
     inspector.render(path, node, workspace);
   }
 
+  /** Hang the ledger pane under the header like the detailed view, floating
+   * over the hub's right half; the pane stays open across background refreshes
+   * and closes only when the learner closes it (or the detailed view). */
+  function positionWorkspacePane(): void {
+    workspacePaneContainer.style.top = `${header.offsetTop + header.offsetHeight + 12}px`;
+  }
+
+  function renderWorkspacePane(): void {
+    if (disposed || signal.aborted) return;
+    const show = workspaceOpen && path !== null;
+    workspacePaneContainer.hidden = !show;
+    // A closed pane mounts nothing; opening renders fresh from the manifest.
+    if (!show) return;
+    positionWorkspacePane();
+    workspacePane.render(path, path ? nodeById(path, selectedNodeId) : null, workspace);
+  }
+
   function renderHeader(): void {
     if (disposed || signal.aborted) return;
     pathSelect.replaceChildren();
@@ -472,6 +518,7 @@ export function mountPathHub(
     overview.render(summaries, selectedPathId);
     renderPathView();
     renderInspector();
+    renderWorkspacePane();
   }
 
   function ensureSelection(): void {
@@ -577,6 +624,8 @@ export function mountPathHub(
     selectedPathId = pathId;
     selectedNodeId = null;
     nodeDeselected = false;
+    // A new path is a new ledger: the pane reopens from the new path's inspector.
+    workspaceOpen = false;
     await refreshAll();
     // An explicit path selection takes precedence over an unsent new-path draft.
     if (path?.id === pathId && path.architectChatId && pane.isNewDraft()) {
@@ -725,14 +774,17 @@ export function mountPathHub(
     }
   }
 
+  /** A note may be created unlinked or linked to several nodes at once; the
+   * links array is the whole filing decision (workspace.saveNote's optional
+   * links — the only backend surface change in this rework). */
   async function saveWorkspaceNote(input: AddNoteInput): Promise<void> {
-    if (disposed || signal.aborted || !path || !selectedNodeId) return;
+    if (disposed || signal.aborted || !path) return;
     try {
       await ctx.call("workspace.saveNote", {
         pathId: path.id,
         title: input.title,
         markdown: input.markdown,
-        ...(input.linkToNode ? { nodeId: selectedNodeId } : {}),
+        links: [...input.links],
       });
       if (disposed || signal.aborted) return;
       showError(null);
@@ -743,30 +795,40 @@ export function mountPathHub(
     }
   }
 
-  /** Learner filing: link or unlink one item to the inspected node. Other links
-   * on the item are preserved exactly as the manifest holds them. */
-  async function setWorkspaceItemLink(itemId: string, linked: boolean): Promise<void> {
-    if (disposed || signal.aborted || !path || !selectedNodeId) return;
-    const item = workspace?.items.find((candidate) => candidate.id === itemId);
-    const links = (item?.links ?? []).filter((link) => link.to !== selectedNodeId);
-    if (linked) links.push({ to: selectedNodeId, rel: LEARNER_LINK_REL });
+  /** Learner filing from the pane's node picker: the picker sends the item's
+   * whole links array (new links rel informs), so one save covers link and
+   * unlink across several nodes at once. */
+  async function setWorkspaceItemLinks(
+    itemId: string,
+    links: readonly WorkspaceItemLink[],
+  ): Promise<void> {
+    if (disposed || signal.aborted || !path) return;
     try {
       await ctx.call("workspace.updateItemMeta", {
         pathId: path.id,
         itemId,
-        links,
+        links: [...links],
       });
       if (disposed || signal.aborted) return;
       showError(null);
       await refreshAll();
     } catch (problem) {
       if (disposed || signal.aborted) return;
-      showError(
-        `Could not ${linked ? "link" : "unlink"} the item: ${
-          problem instanceof Error ? problem.message : String(problem)
-        }`,
-      );
+      showError(`Could not save the links: ${problem instanceof Error ? problem.message : String(problem)}`);
     }
+  }
+
+  /** Lazy content read, used only when the learner opens an item in the pane's
+   * viewer: the ledger itself never fetches item content. */
+  async function readWorkspaceItem(itemId: string): Promise<string | null> {
+    if (disposed || signal.aborted || !path) {
+      throw new Error("The path is not available.");
+    }
+    const result = await ctx.call<{ content: string | null }>("workspace.readItem", {
+      pathId: path.id,
+      itemId,
+    });
+    return result.content ?? null;
   }
 
   async function deleteWorkspaceItem(itemId: string): Promise<void> {
@@ -890,6 +952,22 @@ export function mountPathHub(
   );
   handles.push(inspectorCloseButton);
 
+  const workspaceCloseButton = ctx.ui.mountButton(
+    workspaceCloseHost,
+    {
+      label: "Close",
+      variant: "outline",
+      size: "sm",
+      onClick: () => {
+        if (signal.aborted || disposed) return;
+        workspaceOpen = false;
+        renderWorkspacePane();
+      },
+    },
+    { signal },
+  );
+  handles.push(workspaceCloseButton);
+
   pathSelect.addEventListener("change", () => {
     if (signal.aborted || disposed) return;
     void selectPath(pathSelect.value);
@@ -941,6 +1019,7 @@ export function mountPathHub(
   // text), so the floating window re-hangs under it instead of drifting over.
   const onViewResize = (): void => {
     if (!disposed && !signal.aborted && !inspectorContainer.hidden) positionInspector();
+    if (!disposed && !signal.aborted && !workspacePaneContainer.hidden) positionWorkspacePane();
   };
   const defaultView = document.defaultView;
   if (defaultView) defaultView.addEventListener("resize", onViewResize);
@@ -957,6 +1036,7 @@ export function mountPathHub(
     handles.length = 0;
     disposeCards();
     inspector.dispose();
+    workspacePane.dispose();
     overview.dispose();
     pane.dispose();
     root.remove();

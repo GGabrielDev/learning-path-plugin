@@ -75,6 +75,73 @@ test("workspace.saveNote stores the learner's Markdown verbatim and links it to 
   }
 });
 
+test("workspace.saveNote takes an optional links array: unlinked or linked to several nodes", async () => {
+  const { host, directory } = hostWithPath();
+  try {
+    // A note created unlinked: the links array is simply empty.
+    const unlinked = await host.call<{ item: { links: unknown[] } }>("workspace.saveNote", {
+      pathId: "path-linear-algebra",
+      title: "Loose scratchpad",
+      markdown: "body",
+      links: [],
+    });
+    assert.deepEqual(unlinked.item.links, []);
+
+    // One note linked to several nodes at once, relations as sent.
+    const linked = await host.call<{ item: { links: { to: string; rel: string }[] } }>(
+      "workspace.saveNote",
+      {
+        pathId: "path-linear-algebra",
+        title: "Feynman notes on vector spaces",
+        markdown: "body",
+        links: [
+          { to: "n-skill", rel: "informs" },
+          { to: "n-concept", rel: "informs" },
+          { to: "n-holistic", rel: "grounds" },
+        ],
+      },
+    );
+    assert.deepEqual(linked.item.links, [
+      { to: "n-skill", rel: "informs" },
+      { to: "n-concept", rel: "informs" },
+      { to: "n-holistic", rel: "grounds" },
+    ]);
+
+    // nodeId/rel stay the single-node shorthand when links is absent.
+    const shorthand = await host.call<{ item: { links: { to: string; rel: string }[] } }>(
+      "workspace.saveNote",
+      { pathId: "path-linear-algebra", nodeId: "n-skill", title: "Shorthand", markdown: "body" },
+    );
+    assert.deepEqual(shorthand.item.links, [{ to: "n-skill", rel: "informs" }]);
+
+    // Every link still resolves against a real node before anything is written.
+    await assert.rejects(
+      () =>
+        host.call("workspace.saveNote", {
+          pathId: "path-linear-algebra",
+          title: "Broken link",
+          markdown: "body",
+          links: [{ to: "n-missing", rel: "informs" }],
+        }),
+      /unknown node id "n-missing"/,
+    );
+    await assert.rejects(
+      () =>
+        host.call("workspace.saveNote", {
+          pathId: "path-linear-algebra",
+          title: "Malformed links",
+          markdown: "body",
+          links: "n-skill",
+        }),
+      /links must be an array/,
+    );
+    const stored = openLearningPathStore(directory).workspace("path-linear-algebra")!.items;
+    assert.equal(stored.length, 3, "a rejected save materializes nothing");
+  } finally {
+    close(host, directory);
+  }
+});
+
 test("workspace.saveNote validates path, title and content bound before writing", async () => {
   const { host, directory } = hostWithPath();
   try {
