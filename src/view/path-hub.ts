@@ -186,23 +186,42 @@ export function mountPathHub(
   body.append(pathPane, architectContainer);
   root.append(body);
 
-  // The detailed view floats over the hub's right half, hanging under the
-  // header: the roadmap and the Architect conversation keep their width, and
-  // the inspector opens on node selection and closes on demand.
+  // The detailed view floats over the hub's right half, pinned to the top
+  // of the learner's viewport: the roadmap and the Architect conversation keep
+  // their width, and the inspector opens on node selection and closes on demand.
+  // The frame itself never scrolls: an inner scroller owns the overflow (so the
+  // title bar can auto-hide out of the way while scrolling down and come back
+  // on the way up), while a drag grip on the left edge lets the learner resize
+  // the window and an Expand toggle stretches it across the whole hub.
   const inspectorContainer = element(document, "aside", "lp-inspector-pane");
   inspectorContainer.setAttribute("aria-label", "Node details");
   inspectorContainer.hidden = true;
+  const inspectorGrip = element(document, "div", "lp-inspector-grip");
+  inspectorGrip.setAttribute("aria-hidden", "true");
+  inspectorGrip.title = "Drag to resize · double-click to reset";
+  const inspectorScroll = element(document, "div", "lp-inspector-scroll");
   const inspectorBar = element(document, "div", "lp-inspector-bar");
   inspectorBar.append(element(document, "span", "lp-inspector-bar-title", "Node details"));
+  const inspectorExpandHost = element(document, "span", "lp-button-host");
   const inspectorCloseHost = element(document, "span", "lp-button-host");
-  inspectorBar.append(inspectorCloseHost);
-  inspectorContainer.append(inspectorBar);
+  inspectorBar.append(inspectorExpandHost, inspectorCloseHost);
+  inspectorScroll.append(inspectorBar);
+  inspectorContainer.append(inspectorGrip, inspectorScroll);
   root.append(inspectorContainer);
 
   let summaries: PathSummary[] = [];
   let path: LearningPath | null = null;
   let selectedPathId: string | null = null;
   let selectedNodeId: string | null = null;
+  /** Window shape the learner controls: Expand stretches the window across
+   * the whole hub, and a dragged width (null = the measured default half)
+   * survives re-renders and background refreshes. */
+  let inspectorExpanded = false;
+  let inspectorWidth: number | null = null;
+  /** Last inspector scroll offset and node: scrolling down fades the title bar
+   * out of the way, and switching nodes rewinds to the top with it visible. */
+  let inspectorScrollTop = 0;
+  let lastInspectorNodeId: string | null = null;
   /** The learner closed the detailed view; refreshes keep it closed. */
   let nodeDeselected = false;
   let refineOpen = false;
@@ -221,7 +240,7 @@ export function mountPathHub(
 
   const pane = createArchitectPane(ctx, architectContainer, signal);
   const launcher = createSessionLauncher(ctx, { host: options.sessionHost });
-  const inspector = createNodeInspector(ctx, inspectorContainer, signal, {
+  const inspector = createNodeInspector(ctx, inspectorScroll, signal, {
     openSession(chatId) {
       if (!signal.aborted && !disposed) ctx.app.openSession(chatId);
     },
@@ -392,18 +411,96 @@ export function mountPathHub(
     buildRoadmap();
   }
 
-  /** Hang the floating window directly under the header — never over it —
-   * whatever the header's current wrapped height. The hub root is the
-   * positioned ancestor (see `.lp-hub`), so this is a layout offset, not a
-   * viewport one: the window never covers the host's top bar either. */
+  /** Pin the floating window to the top of the learner's viewport, not the top
+   * of the page: while the header is on screen the window hangs under it, and
+   * once it is scrolled past the window sits flush at the viewport top (with
+   * breathing room). Left and width come from the hub's measured rect so the
+   * window keeps floating over the hub's right half wherever the page is
+   * scrolled. Expand stretches the window across the whole hub instead of the
+   * default half, and a dragged width (null until the learner resizes) is
+   * clamped to the hub. Zero rects (jsdom, unattached hosts) leave the CSS
+   * fallbacks in charge instead of collapsing the pane. */
   function positionInspector(): void {
-    inspectorContainer.style.top = `${header.offsetTop + header.offsetHeight + 12}px`;
+    const view = document.defaultView;
+    if (!view) return;
+    const margin = 12;
+    inspectorContainer.style.top = `${Math.max(margin, header.getBoundingClientRect().bottom + margin)}px`;
+    const hubRect = root.getBoundingClientRect();
+    if (hubRect.width === 0) return;
+    const width = inspectorExpanded
+      ? hubRect.width
+      : Math.max(Math.min(inspectorWidth ?? hubRect.width / 2 - 10, hubRect.width), 0);
+    inspectorContainer.style.width = `${width}px`;
+    inspectorContainer.style.left = `${hubRect.right - width}px`;
   }
+
+  function toggleInspectorExpanded(next: boolean): void {
+    inspectorExpanded = next;
+    inspectorContainer.classList.toggle("lp-inspector-expanded", next);
+    inspectorExpandButton.update({ label: next ? "Restore" : "Expand" });
+    positionInspector();
+  }
+
+  // The title bar rides at the top of the details, but it must not squat over
+  // the content: scrolling down fades it out of the way, and scrolling up (or
+  // reaching the top) brings the title and its controls back within reach.
+  inspectorScroll.addEventListener(
+    "scroll",
+    () => {
+      if (disposed || signal.aborted) return;
+      const top = inspectorScroll.scrollTop;
+      const hide = top > 24 && top > inspectorScrollTop;
+      inspectorScrollTop = top;
+      inspectorBar.classList.toggle("lp-inspector-bar-hidden", hide);
+    },
+    { passive: true },
+  );
+
+  // Drag the left grip to widen or narrow the window; the window stays
+  // anchored to the hub's right edge. Double-click resets to the default.
+  // Expanded mode covers the whole hub already, so there is nothing to drag.
+  inspectorGrip.addEventListener("pointerdown", (event) => {
+    if (signal.aborted || disposed || inspectorExpanded) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    inspectorGrip.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = inspectorContainer.getBoundingClientRect().width;
+    const onMove = (move: PointerEvent): void => {
+      if (move.pointerId !== event.pointerId) return;
+      const hubRect = root.getBoundingClientRect();
+      inspectorWidth = Math.max(280, Math.min(startWidth + (startX - move.clientX), hubRect.width));
+      positionInspector();
+    };
+    const onEnd = (end: PointerEvent): void => {
+      if (end.pointerId !== event.pointerId) return;
+      inspectorGrip.removeEventListener("pointermove", onMove);
+      inspectorGrip.removeEventListener("pointerup", onEnd);
+      inspectorGrip.removeEventListener("pointercancel", onEnd);
+    };
+    inspectorGrip.addEventListener("pointermove", onMove);
+    inspectorGrip.addEventListener("pointerup", onEnd);
+    inspectorGrip.addEventListener("pointercancel", onEnd);
+  });
+  inspectorGrip.addEventListener("dblclick", () => {
+    if (signal.aborted || disposed) return;
+    inspectorWidth = null;
+    positionInspector();
+  });
 
   function renderInspector(): void {
     if (disposed || signal.aborted) return;
     const node = path ? nodeById(path, selectedNodeId) : null;
     inspectorContainer.hidden = node === null;
+    // A different node is fresh content: rewind to the top with the bar back
+    // in place. Background refreshes of the same node keep the learner's
+    // scroll position and the bar in whatever state the scrolling left it.
+    if (node?.id !== lastInspectorNodeId) {
+      lastInspectorNodeId = node?.id ?? null;
+      inspectorScrollTop = 0;
+      inspectorScroll.scrollTop = 0;
+      inspectorBar.classList.remove("lp-inspector-bar-hidden");
+    }
     if (node !== null) positionInspector();
     inspector.render(path, node);
   }
@@ -784,6 +881,21 @@ export function mountPathHub(
   );
   handles.push(exportButton);
 
+  const inspectorExpandButton = ctx.ui.mountButton(
+    inspectorExpandHost,
+    {
+      label: "Expand",
+      variant: "outline",
+      size: "xs",
+      onClick: () => {
+        if (signal.aborted || disposed) return;
+        toggleInspectorExpanded(!inspectorExpanded);
+      },
+    },
+    { signal },
+  );
+  handles.push(inspectorExpandButton);
+
   const inspectorCloseButton = ctx.ui.mountButton(
     inspectorCloseHost,
     {
@@ -843,12 +955,16 @@ export function mountPathHub(
   });
 
   // A host resize can rewrap the header (its height changes with the goal
-  // text), so the floating window re-hangs under it instead of drifting over.
-  const onViewResize = (): void => {
+  // text), and scrolling the page moves the hub past the viewport top, so the
+  // floating window re-pins instead of drifting out of view. Scroll events do
+  // not bubble, but the capture listener still sees them from any host
+  // scroll container.
+  const onViewChange = (): void => {
     if (!disposed && !signal.aborted && !inspectorContainer.hidden) positionInspector();
   };
   const defaultView = document.defaultView;
-  if (defaultView) defaultView.addEventListener("resize", onViewResize);
+  if (defaultView) defaultView.addEventListener("resize", onViewChange);
+  document.addEventListener("scroll", onViewChange, { capture: true, passive: true });
 
   const onAbort = (): void => {
     if (disposed) return;
@@ -857,7 +973,8 @@ export function mountPathHub(
     offNotification();
     offNavigation();
     offResync();
-    if (defaultView) defaultView.removeEventListener("resize", onViewResize);
+    if (defaultView) defaultView.removeEventListener("resize", onViewChange);
+    document.removeEventListener("scroll", onViewChange, { capture: true });
     for (const handle of handles.reverse()) handle.dispose();
     handles.length = 0;
     disposeCards();

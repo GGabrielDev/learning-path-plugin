@@ -8,8 +8,7 @@
 }
 
 .lp-hub {
-  position: relative; /* the floating inspector hangs under the header, anchored here */
-  display: flex;
+  display: flex; /* the floating inspector is viewport-fixed, not anchored here */
   flex-direction: column;
   gap: 20px;
   min-width: 0;
@@ -131,18 +130,21 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
-/* The detailed view floats over the hub's right half, hanging directly under
- * the header (the top offset is set from the measured header height): it never
- * covers the header or the host's top bar, never takes the full window height,
- * and casts its own shadow over the roadmap it overlays. */
+/* The detailed view floats over the hub's right half, pinned to the top of
+ * the learner's viewport (top, left and width are set from measured rects,
+ * so it hangs under the header while that is on screen and sits flush at the
+ * viewport top once scrolled past): it never takes the full window height,
+ * and casts its own shadow over the roadmap it overlays. The declared top
+ * and right are only fallbacks until the first measurement lands. The frame
+ * itself never scrolls — an inner scroller owns the overflow — so the drag
+ * grip can hug the frame's left edge without scrolling with the content. */
 .lp-inspector-pane {
-  position: absolute;
+  position: fixed;
+  top: 12px;
   right: 0;
   box-sizing: border-box;
   width: calc(50% - 10px);
   max-height: min(72vh, 44rem);
-  overflow-y: auto;
-  padding: clamp(10px, 1.5vw, 16px);
   border: 1px solid var(--border, #e4e4e7);
   border-radius: 10px;
   background: var(--card, var(--background));
@@ -150,8 +152,58 @@
   z-index: 40;
 }
 
+/* Expanded: the window stretches across the whole hub and grows towards the
+ * full viewport height, and the grip disappears (there is nothing left to
+ * drag — Restore brings the previous width back). */
+.lp-inspector-pane.lp-inspector-expanded {
+  max-height: calc(100vh - 24px);
+}
+
+.lp-inspector-pane.lp-inspector-expanded .lp-inspector-grip {
+  display: none;
+}
+
 .lp-inspector-pane[hidden] {
   display: none;
+}
+
+/* The scroller inherits the frame's height cap so the frame shrinks to the
+ * details and the overflow stays inside, under the sticky title bar. */
+.lp-inspector-scroll {
+  box-sizing: border-box;
+  max-height: inherit;
+  overflow-y: auto;
+  padding: clamp(10px, 1.5vw, 16px);
+}
+
+/* Drag grip on the window's left edge (right edge is anchored to the hub):
+ * a slim visible pill on hover/active, half inside the frame border. */
+.lp-inspector-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -6px;
+  width: 14px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 3;
+}
+
+.lp-inspector-grip::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  width: 3px;
+  height: 44px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  background: var(--border, #e4e4e7);
+}
+
+.lp-inspector-grip:hover::after,
+.lp-inspector-grip:active::after {
+  background: var(--muted-foreground, #a1a1aa);
 }
 
 .lp-inspector-bar {
@@ -165,6 +217,18 @@
   padding: 0 0 6px;
   background: var(--card, var(--background));
   z-index: 1;
+  max-height: 4rem;
+  transition: max-height 160ms ease, padding 160ms ease, opacity 160ms ease;
+}
+
+/* Hidden while scrolling down: the bar collapses out of the way instead of
+ * squatting over the details; scrolling up brings it back. */
+.lp-inspector-bar.lp-inspector-bar-hidden {
+  max-height: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .lp-inspector-bar-title {
