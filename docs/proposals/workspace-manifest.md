@@ -131,3 +131,25 @@ Each is one reviewable change, on its own space branch off `feat/ui-upgrades`.
 - **Advisory link suggestions** (phase 5 candidate): sessions propose links
   the learner accepts or dismisses; agents never write learner-item links.
 - Any auto-tagging, auto-summarizing or auto-arranging of learner material.
+
+## Live-review overrides after phase 2
+
+From hands-on testing of the notes surface, recorded in the same spirit as the
+hub-views proposal's overrides:
+
+1. **The ledger moved out of the Node Inspector into a pop-out pane.** The
+   inline section read as cramped ("grounded") and made the inspector heavy;
+   the inspector now shows one calm affordance, and the pane — floating,
+   closable, scrollable, following the Paths overview's floating detailed-view
+   pattern — carries the list. Note content loads on demand, only when a note
+   is opened for viewing: the pane lists titles, `workspace.readItem` fetches
+   the body.
+2. **Filing loosened from the inspected node.** Adding a note per node is
+   onerous; a note may now be created unlinked and linked to several nodes at
+   once (a node picker in the pane, rel `informs`, through the existing
+   `workspace.updateItemMeta` links array). The per-node flow remains but is
+   no longer the only path.
+3. **Opening the OS directory that holds workspace files is deferred.** The
+   host exposes no reveal-a-folder primitive, and the plugin does not spawn
+   processes off-contract. Drag-and-drop of files onto the pane is the
+   plugin-side equivalent and lands with the uploads phase.

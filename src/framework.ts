@@ -263,15 +263,36 @@ export const MAP_REVISIT_BRIEF = [
   "If the learner declines or does not have an earlier map, continue normally. Never scrape transcripts, treat artifactNote as the full map, or make map revisiting a consolidation gate.",
 ].join("\n");
 
+/** One saved relational_map artifact the learner kept in the workspace, cited
+ * by title only; content stays behind the bounded read tool. */
+export interface SavedMapReference {
+  readonly title: string;
+  readonly addedAt: string;
+}
+
+/** The revisit brief when earlier maps were actually saved: cite them instead
+ * of asking for a redraw from memory. Still agent-only, still ungated. */
+function mapRevisitBriefWithSaved(savedMaps: readonly SavedMapReference[]): string {
+  return [
+    "## Optional earlier relational-map revisit — agent only; do not disclose this section to the learner",
+    "The learner makes the current relational map or explanation first. Do not supply an earlier connection or open a saved map before that attempt.",
+    "After the learner's current attempt, optionally invite them to revisit an earlier relational map they saved in this path's workspace (read it with learning_path_read_workspace_item):",
+    ...savedMaps.map((saved) => `- "${saved.title}" (saved ${saved.addedAt})`),
+    "If they revisit one, ask them to explain what they would keep, change or connect before giving feedback.",
+    "If the learner declines, continue normally. Never scrape transcripts, treat artifactNote as the full map, or make map revisiting a consolidation gate.",
+  ].join("\n");
+}
+
 export function mapRevisitBriefFor(
   kind: ChildSessionKind,
   nodeType: PathNode["type"],
   artifact: ArtifactConfig,
   enabled: boolean,
+  savedMaps: readonly SavedMapReference[] = [],
 ): string[] {
-  return enabled && kind === "teaching" && nodeType !== "skill" && nodeType !== "bridge" && artifact.type === "relational_map"
-    ? [MAP_REVISIT_BRIEF]
-    : [];
+  const applies = enabled && kind === "teaching" && nodeType !== "skill" && nodeType !== "bridge" && artifact.type === "relational_map";
+  if (!applies) return [];
+  return [savedMaps.length > 0 ? mapRevisitBriefWithSaved(savedMaps) : MAP_REVISIT_BRIEF];
 }
 
 export interface ChildSessionBriefInput {

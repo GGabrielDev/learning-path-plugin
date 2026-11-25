@@ -104,11 +104,11 @@ test("instructions exist, and native tools are injected only for linked chats of
       teaching.map((tool) => tool.name),
       [...LEARNING_PATH_TOOL_NAMES],
     );
-    assert.equal(host.nativeTools("chat-1", "prober").length, 5);
+    assert.equal(host.nativeTools("chat-1", "prober").length, 6);
     assert.deepEqual(host.nativeTools("chat-1", "practice"), [], "teaching chats do not feed practice");
 
     const practice = host.nativeTools("chat-practice", "practice");
-    assert.equal(practice.length, 5);
+    assert.equal(practice.length, 6);
     assert.deepEqual(host.nativeTools("chat-practice", "teacher"), []);
   } finally {
     close(host, directory);
@@ -175,7 +175,7 @@ test("map revisit guidance reaches only enabled relational-map teaching briefs a
 test("deleted native chats stop injection even while the plugin link remains", async () => {
   const { host, directory } = hostWithPath([chat("chat-1")]);
   try {
-    assert.equal(host.nativeTools("chat-1", "teacher").length, 5);
+    assert.equal(host.nativeTools("chat-1", "teacher").length, 6);
     // Keep a turn's tools alive, then delete the host-owned chat.
     const tools = host.nativeTools("chat-1", "teacher");
     assert.equal(host.removeChat("chat-1"), true);
@@ -336,7 +336,7 @@ test("enabled graph context reaches teacher/practice tool briefs and search, nev
     assert.equal(result.isError, false);
     assert.deepEqual(result.details.propositions, [{ id: "prior", statement: proposition.statement }]);
     assert.match(result.text, /never state a connection before the learner has tried/);
-    assert.equal(host.nativeTools("chat-1", "prober").length, 5);
+    assert.equal(host.nativeTools("chat-1", "prober").length, 6);
     const prober = await runTool(host.nativeTools("chat-1", "prober"), "learning_path_get_brief", {});
     assert.equal(prober.text, offBrief.text);
     assert.deepEqual(host.nativeTools("unlinked", "teacher"), []);
@@ -362,7 +362,7 @@ test("graph context safely falls back and stale tools cannot read after disablin
     const baseline = await runTool(baseTools, "learning_path_get_brief", {});
     await host.call("settings.save", { artifactDefaults: {}, graphContextEnabled: true });
     const tools = host.nativeTools("chat-1", "teacher");
-    assert.equal(tools.length, 6);
+    assert.equal(tools.length, 7);
     for (const fallback of ["empty", "throw", "missing"] as const) {
       mode = fallback;
       assert.deepEqual(host.nativeTools("chat-1", "teacher").map(t => t.name), baseTools.map(t => t.name));
@@ -593,6 +593,171 @@ test("the workspace read tool stops for unlinked chats, deletions and file-less 
     host.removeChat("chat-skill");
     const afterDelete = await runTool(tools, "learning_path_read_workspace_item", { itemId: sourceItem.id });
     assert.match(afterDelete.text, /no longer exists/);
+  } finally {
+    close(host, directory);
+  }
+});
+
+test("save_artifact stores the full artifact text with session provenance and a produced_by link", async () => {
+  const directory = temporaryDirectory();
+  const store = openLearningPathStore(directory);
+  store.savePath(makePath());
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-1")] });
+  try {
+    await host.call("sessions.link", {
+      pathId: "path-linear-algebra",
+      nodeId: "n-concept",
+      chatId: "chat-1",
+      kind: "teaching",
+    });
+    const tools = host.nativeTools("chat-1", "teacher");
+    const markdown = "# Relational map\n\n- queues -> schedulers";
+    const saved = await runTool(tools, "learning_path_save_artifact", {
+      title: "My concurrency map",
+      content: markdown,
+    });
+    assert.equal(saved.isError, false);
+    assert.equal(saved.details.nodeId, "n-concept");
+    assert.equal(saved.details.kind, "session_artifact");
+    assert.equal(saved.details.addedBy, "session:chat-1");
+    assert.deepEqual(saved.details.links, [{ to: "n-concept", rel: "produced_by" }]);
+    const itemId = saved.details.itemId as string;
+
+    const workspace = openLearningPathStore(directory).workspace("path-linear-algebra");
+    assert.ok(workspace, "the save materializes the workspace");
+    const item = workspace.items.find((candidate) => candidate.id === itemId);
+    assert.ok(item);
+    assert.equal(item.kind, "session_artifact");
+    assert.equal(item.title, "My concurrency map");
+    assert.equal(item.addedBy, "session:chat-1");
+    assert.deepEqual([...item.links], [{ to: "n-concept", rel: "produced_by" }]);
+    assert.equal(openLearningPathStore(directory).readWorkspaceItemContent("path-linear-algebra", itemId), markdown);
+
+    // Saving is never a gate: the path record itself is untouched.
+    const path = savedPath(directory);
+    const node = path.modules[0]!.nodes.find((entry) => entry.id === "n-concept")!;
+    assert.equal(node.progression, "in_progress");
+    assert.equal(node.artifactNote, undefined);
+    assert.equal(node.errors.length, 0);
+
+    // artifactNote keeps working exactly as before, alongside the saved item.
+    const progress = await runTool(tools, "learning_path_update_progress", {
+      progression: "consolidated",
+      artifactNote: "Wrote the smallest failing interpreter.",
+    });
+    assert.equal(progress.isError, false);
+    assert.equal(progress.details.artifactNote, "Wrote the smallest failing interpreter.");
+    const after = savedPath(directory).modules[0]!.nodes.find((entry) => entry.id === "n-concept")!;
+    assert.equal(after.artifactNote, "Wrote the smallest failing interpreter.");
+    assert.equal(after.progression, "consolidated");
+  } finally {
+    close(host, directory);
+  }
+});
+
+test("save_artifact defaults its title, feeds the brief titles-only, and refuses bad input or vanished chats", async () => {
+  const directory = temporaryDirectory();
+  const store = openLearningPathStore(directory);
+  store.savePath(makePath());
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-1")] });
+  try {
+    await host.call("sessions.link", {
+      pathId: "path-linear-algebra",
+      nodeId: "n-concept",
+      chatId: "chat-1",
+      kind: "teaching",
+    });
+    const tools = host.nativeTools("chat-1", "teacher");
+    const defaulted = await runTool(tools, "learning_path_save_artifact", {
+      content: "smallest failing interpreter",
+    });
+    assert.equal(defaulted.isError, false);
+    assert.match(defaulted.details.itemTitle as string, /^Node n-concept — /);
+
+    // The brief lists the saved artifact by kind and title only.
+    const brief = await runTool(tools, "learning_path_get_brief", {});
+    assert.match(brief.text, /- session_artifact: Node n-concept — /);
+
+    const blank = await runTool(tools, "learning_path_save_artifact", { content: "   " });
+    assert.equal(blank.isError, true);
+    assert.match(blank.text, /content must not be blank/);
+
+    const oversized = await runTool(tools, "learning_path_save_artifact", {
+      content: "x".repeat(256 * 1024 + 1),
+    });
+    assert.equal(oversized.isError, true);
+    assert.match(oversized.text, /at most/);
+
+    await host.call("sessions.unlink", {
+      pathId: "path-linear-algebra",
+      nodeId: "n-concept",
+      chatId: "chat-1",
+    });
+    const afterUnlink = await runTool(tools, "learning_path_save_artifact", { content: "still produced" });
+    assert.equal(afterUnlink.isError, true);
+    assert.match(afterUnlink.text, /no longer linked to a Learning Path node/);
+
+    host.removeChat("chat-1");
+    const afterDelete = await runTool(tools, "learning_path_save_artifact", { content: "still produced" });
+    assert.equal(afterDelete.isError, true);
+    assert.match(afterDelete.text, /no longer exists/);
+  } finally {
+    close(host, directory);
+  }
+});
+
+test("map revisit cites the learner's saved relational maps instead of a redraw from memory", async () => {
+  const directory = temporaryDirectory();
+  const path = { ...makePath(), artifactDefault: null };
+  openLearningPathStore(directory).savePath(path);
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-map"), chat("chat-other"), chat("chat-concept")] });
+  try {
+    await host.call("settings.save", { artifactDefaults: {}, mapRevisitEnabled: true });
+    await host.call("sessions.link", {
+      pathId: path.id,
+      nodeId: "n-contrast",
+      chatId: "chat-map",
+      kind: "teaching",
+    });
+
+    // No saved map yet: the original supply-an-earlier-map brief applies.
+    const before = await runTool(host.nativeTools("chat-map", "teacher"), "learning_path_get_brief", {});
+    assert.match(before.text, /supply an earlier map of their choice/);
+
+    // Another session on the same node saves its map; provenance is its own chat.
+    await host.call("sessions.link", {
+      pathId: path.id,
+      nodeId: "n-contrast",
+      chatId: "chat-other",
+      kind: "teaching",
+    });
+    const saved = await runTool(host.nativeTools("chat-other", "teacher"), "learning_path_save_artifact", {
+      title: "First relational map",
+      content: "# Map of the earlier session",
+    });
+    assert.equal(saved.isError, false);
+
+    const after = await runTool(host.nativeTools("chat-map", "teacher"), "learning_path_get_brief", {});
+    assert.match(after.text, /earlier relational map they saved in this path's workspace/);
+    assert.match(after.text, /"First relational map"/);
+    assert.match(after.text, /learning_path_read_workspace_item/);
+    assert.doesNotMatch(after.text, /# Map of the earlier session/, "titles only; content stays behind the tool");
+    assert.match(after.text, /Never scrape transcripts, treat artifactNote as the full map/);
+
+    // A different node's saved artifact never leaks into this brief.
+    await host.call("sessions.link", {
+      pathId: path.id,
+      nodeId: "n-concept",
+      chatId: "chat-concept",
+      kind: "teaching",
+    });
+    await runTool(host.nativeTools("chat-concept", "teacher"), "learning_path_save_artifact", {
+      title: "Concept-node artifact",
+      content: "not a map for n-contrast",
+    });
+    const unaffected = await runTool(host.nativeTools("chat-map", "teacher"), "learning_path_get_brief", {});
+    assert.match(unaffected.text, /"First relational map"/);
+    assert.doesNotMatch(unaffected.text, /"Concept-node artifact"/);
   } finally {
     close(host, directory);
   }

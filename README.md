@@ -144,7 +144,10 @@ Knowledge Graph records.
    want. A child session's brief lists the material linked to its node by kind
    and title only, and reads the full text through the bounded
    `learning_path_read_workspace_item` tool — so the brief stays small no matter
-   how much you file. Agents can never create, edit, link or delete your items.
+   how much you file. When a session actually produces its node's recommended
+   artifact, it saves the full text with `learning_path_save_artifact` — it
+   appears in the Workspace linked to the node, with the session that made it.
+   Agents can never create, edit, link or delete your items.
 5. **Record what happened.** Progression is ungated:
    `unstarted → in_progress → consolidated`. Log mistakes by cognitive root
    cause; unresolved entries travel forward as watchpoints. If a topic genuinely
@@ -272,8 +275,13 @@ semantics of any kind. Notes are Markdown stored verbatim (the ledger's manifest
 is an index; the files under `workspaces/` are the truth), items can link to
 nodes you choose, and deleting a path deletes its workspace. Child sessions see
 linked items by kind and title only; the full text is available to them through
-a bounded chunked read tool. Agents may save their own session artifacts in a
-later phase, but they never create, edit, link or delete learner items.
+a bounded chunked read tool. A session that produces its node's recommended
+artifact can save the full text as a `session_artifact` item linked
+`produced_by` to that node, provenance `session:<chatId>`; the Node Inspector
+shows saved artifacts with their originating session, and map-revisit briefs
+cite saved relational maps instead of asking for a redraw from memory. Agents
+never create, edit, link or delete learner items, and saving an artifact is
+never a gate: progression and revisits work identically without one.
 
 ## Project layout
 
