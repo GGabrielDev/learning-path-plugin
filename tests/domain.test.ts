@@ -5,20 +5,38 @@ import {
   ARTIFACT_CATALOG,
   ARTIFACT_TYPES,
   ERROR_CATEGORIES,
+  MAX_WORKSPACE_ITEMS,
+  MAX_WORKSPACE_NOTE_BYTES,
   NODE_TYPES,
   PIVOT_PROPOSAL_TYPES,
   PROGRESSION_STATES,
+  WORKSPACE_ITEM_KINDS,
+  WORKSPACE_LINK_RELS,
   artifactCatalogEntry,
   defaultArtifactFor,
   formatSourceAnchor,
   parseLearningPath,
   parsePluginSettings,
+  parseWorkspaceManifest,
   recommendedArtifactsFor,
   validateLearningPath,
   validatePluginSettings,
+  validateWorkspaceManifest,
 } from "../src/domain.ts";
+import type { WorkspaceItem, WorkspaceManifest } from "../src/domain.ts";
 import type { LearningPath } from "../src/domain.ts";
-import { AT, makePath, rawPath } from "./fixtures.ts";
+import {
+  AT,
+  ITEM_ID,
+  ITEM_ID_2,
+  ITEM_ID_3,
+  ITEM_ID_4,
+  UUID,
+  makeItem,
+  makeManifest,
+  makePath,
+  rawPath,
+} from "./fixtures.ts";
 
 test("accepts a full path covering all six node types and three progression states", () => {
   const path = makePath();
@@ -298,4 +316,135 @@ test("plugin settings validate artifact defaults per node type", () => {
   );
   const result = validatePluginSettings({ artifactDefaults: { concept: "video" } });
   assert.equal(result.ok, false);
+});
+
+test("workspace kinds and link relations are exactly the v1 set", () => {
+  assert.deepEqual(WORKSPACE_ITEM_KINDS, ["note", "session_artifact", "source", "code"]);
+  assert.deepEqual(WORKSPACE_LINK_RELS, ["grounds", "informs", "produced_by"]);
+  assert.equal(MAX_WORKSPACE_ITEMS, 300);
+  assert.equal(MAX_WORKSPACE_NOTE_BYTES, 256 * 1024);
+});
+
+test("a full workspace manifest round-trips with every kind, relation and optional field", () => {
+  const manifest = makeManifest({
+    items: [
+      makeItem({
+        kind: "note",
+        byteSize: 34,
+        sha256: "a".repeat(64),
+        caption: "Feynman attempt, first pass",
+        links: [
+          { to: "n-concept", rel: "grounds" },
+          { to: "space", rel: "informs" },
+        ],
+      }),
+      makeItem({
+        id: ITEM_ID_2,
+        kind: "source",
+        sourceId: UUID,
+        links: [{ to: "n-skill", rel: "informs" }],
+      }),
+      makeItem({
+        id: ITEM_ID_3,
+        kind: "session_artifact",
+        addedBy: "session:chat-1",
+        links: [{ to: "n-concept", rel: "produced_by" }],
+      }),
+      makeItem({ id: ITEM_ID_4, kind: "code", addedBy: "architect:chat-architect" }),
+    ],
+  });
+  assert.deepEqual(parseWorkspaceManifest(manifest), manifest);
+  const result = validateWorkspaceManifest(manifest);
+  assert.equal(result.ok, true);
+});
+
+test("rejects unknown kinds, relations and malformed provenance", () => {
+  const badKind = makeManifest({ items: [makeItem({ kind: "image" as never })] });
+  assert.throws(
+    () => parseWorkspaceManifest(badKind),
+    /items\[0\]\.kind: must be one of: note, session_artifact, source, code/,
+  );
+
+  const badRel = makeManifest({
+    items: [makeItem({ links: [{ to: "n-concept", rel: "evidence_of" as never }] })],
+  });
+  assert.throws(() => parseWorkspaceManifest(badRel), /links\[0\]\.rel: must be one of/);
+
+  for (const addedBy of ["agent:chat-1", "learner:x", "session:", "architect:bad id"]) {
+    const badAddedBy = makeManifest({ items: [makeItem({ addedBy })] });
+    assert.throws(
+      () => parseWorkspaceManifest(badAddedBy),
+      /addedBy: must be "learner", "architect:<chatId>" or "session:<chatId>"/,
+      addedBy,
+    );
+  }
+});
+
+test("source items must reference sources/; nothing else may", () => {
+  const missingReference = makeManifest({ items: [makeItem({ kind: "source" })] });
+  assert.throws(() => parseWorkspaceManifest(missingReference), /sourceId: is required for kind "source"/);
+
+  const noteWithSource = makeManifest({ items: [makeItem({ sourceId: UUID })] });
+  assert.throws(() => parseWorkspaceManifest(noteWithSource), /sourceId: is only allowed on kind "source"/);
+
+  const badSourceId = makeManifest({ items: [makeItem({ kind: "source", sourceId: "notes-md" })] });
+  assert.throws(() => parseWorkspaceManifest(badSourceId), /sourceId: must be a UUID/);
+});
+
+test("workspace caps: title length, item count and dedup metadata are bounded", () => {
+  const longTitle = makeManifest({ items: [makeItem({ title: "x".repeat(201) })] });
+  assert.throws(() => parseWorkspaceManifest(longTitle), /title: must be at most 200 characters/);
+
+  const full = makeManifest({
+    items: Array.from({ length: 301 }, (_, index) =>
+      makeItem({ id: `${ITEM_ID}${index.toString(16).padStart(12, "0")}` }),
+    ),
+  });
+  assert.throws(() => parseWorkspaceManifest(full), /items: a workspace carries at most 300 items/);
+
+  const badSha = makeManifest({ items: [makeItem({ sha256: "z".repeat(64) })] });
+  assert.throws(() => parseWorkspaceManifest(badSha), /sha256: must be a lowercase hex SHA-256 digest/);
+
+  const badByteSize = makeManifest({ items: [makeItem({ byteSize: -1 })] });
+  assert.throws(() => parseWorkspaceManifest(badByteSize), /byteSize: must be an integer >= 0/);
+});
+
+test("item ids are UUIDs and duplicate ids, duplicate links and bad links are rejected", () => {
+  const plainId = makeManifest({ items: [makeItem({ id: "item-1" })] });
+  assert.throws(() => parseWorkspaceManifest(plainId), /id: must be a UUID/);
+
+  const duplicateId = makeManifest({ items: [makeItem(), makeItem()] });
+  assert.throws(() => parseWorkspaceManifest(duplicateId), /items\[1\]: duplicate item id/);
+
+  const duplicateLink = makeManifest({
+    items: [
+      makeItem({
+        links: [
+          { to: "n-concept", rel: "grounds" },
+          { to: "n-concept", rel: "grounds" },
+        ],
+      }),
+    ],
+  });
+  assert.throws(() => parseWorkspaceManifest(duplicateLink), /links\[1\]: duplicate link "grounds:n-concept"/);
+
+  const badTarget = makeManifest({ items: [makeItem({ links: [{ to: "bad id", rel: "grounds" }] })] });
+  assert.throws(() => parseWorkspaceManifest(badTarget), /links\[0\]\.to: must be an id/);
+
+  const missingTarget = makeManifest({ items: [makeItem({ links: [{} as never] })] });
+  assert.throws(() => parseWorkspaceManifest(missingTarget), /links\[0\]\.to: must be a string/);
+});
+
+test("an empty manifest is valid and unknown keys are dropped", () => {
+  const empty = parseWorkspaceManifest(makeManifest({ items: [] }));
+  assert.deepEqual(empty.items, []);
+  assert.equal("revision" in empty, false);
+
+  const value = makeManifest() as any;
+  value.extra = { anything: true };
+  value.items[0].schedule = "Monday";
+  const validated = parseWorkspaceManifest(value);
+  assert.ok(validated.items[0]);
+  assert.equal("extra" in validated, false);
+  assert.equal("schedule" in validated.items[0], false);
 });

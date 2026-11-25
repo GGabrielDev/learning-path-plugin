@@ -846,6 +846,172 @@ export function parsePluginSettings(value: unknown): PluginSettings {
   return readPluginSettingsValue(value);
 }
 
+/** Workspace items: the learner's own material attached to one path. The manifest
+ * is a current-state index — entries never embed content; the content files under
+ * `workspaces/<pathId>/files/` are the truth. Agents write only their own
+ * `session_artifact` items; learner items are learner-owned. */
+export const WORKSPACE_ITEM_KINDS = ["note", "session_artifact", "source", "code"] as const;
+export type WorkspaceItemKind = (typeof WORKSPACE_ITEM_KINDS)[number];
+
+/** Link relations for v1. `evidence_of` is deliberately deferred, not forgotten. */
+export const WORKSPACE_LINK_RELS = ["grounds", "informs", "produced_by"] as const;
+export type WorkspaceLinkRel = (typeof WORKSPACE_LINK_RELS)[number];
+
+export const MAX_WORKSPACE_ITEMS = 300;
+export const MAX_WORKSPACE_ITEM_TITLE_LENGTH = 200;
+/** Notes round-trip Markdown verbatim; 256 KiB bounds one item's content file. */
+export const MAX_WORKSPACE_NOTE_BYTES = 256 * 1024;
+
+export interface WorkspaceItemLink {
+  /** A node id in the owning path, or "space" for a workspace-level link. */
+  readonly to: string;
+  readonly rel: WorkspaceLinkRel;
+}
+
+export interface WorkspaceItem {
+  /** A UUID: it names the content file `files/<id>.md`, so it must be one. */
+  readonly id: string;
+  readonly kind: WorkspaceItemKind;
+  readonly title: string;
+  /** kind "source": a reference into the global `sources/` store — the ledger
+   * references, never copies. Not allowed on any other kind. */
+  readonly sourceId?: string;
+  readonly byteSize?: number;
+  readonly sha256?: string;
+  readonly addedAt: string;
+  /** "learner" | "architect:<chatId>" | "session:<chatId>" — provenance, not judgement. */
+  readonly addedBy: string;
+  readonly caption?: string;
+  readonly links: readonly WorkspaceItemLink[];
+}
+
+export interface WorkspaceManifest {
+  readonly schemaVersion: number;
+  readonly pathId: string;
+  readonly updatedAt: string;
+  readonly items: readonly WorkspaceItem[];
+}
+
+const ADDED_BY_PATTERN = /^(architect|session):[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function readAddedBy(value: unknown, path: string): string {
+  const addedBy = readString(value, path, { max: 137 });
+  if (addedBy !== "learner" && !ADDED_BY_PATTERN.test(addedBy)) {
+    fail(path, 'must be "learner", "architect:<chatId>" or "session:<chatId>"');
+  }
+  return addedBy;
+}
+
+/** Workspace item ids name files under `workspaces/<pathId>/files/`, so like
+ * uploaded source ids they must be UUIDs: unguessable and traversal-free. */
+function readWorkspaceItemId(value: unknown, path: string): string {
+  const id = readString(value, path, { max: 128 });
+  if (!isSourceId(id)) fail(path, "must be a UUID");
+  return id;
+}
+
+function readWorkspaceItemLink(value: unknown, path: string): WorkspaceItemLink {
+  const record = readObject(value, path);
+  const to = record.to === "space" ? "space" : readId(record.to, `${path}.to`);
+  return {
+    to,
+    rel: readEnum(record.rel, WORKSPACE_LINK_RELS, `${path}.rel`),
+  };
+}
+
+function readWorkspaceItem(value: unknown, path: string): WorkspaceItem {
+  const record = readObject(value, path);
+  const kind = readEnum(record.kind, WORKSPACE_ITEM_KINDS, `${path}.kind`);
+  let sourceId: string | undefined;
+  if (record.sourceId !== undefined) {
+    if (kind !== "source") {
+      fail(`${path}.sourceId`, 'is only allowed on kind "source"');
+    }
+    const candidate = readString(record.sourceId, `${path}.sourceId`, { max: 128 });
+    if (!isSourceId(candidate)) fail(`${path}.sourceId`, "must be a UUID");
+    sourceId = candidate;
+  }
+  if (kind === "source" && sourceId === undefined) {
+    fail(`${path}.sourceId`, 'is required for kind "source"');
+  }
+  const sha256 = record.sha256 === undefined ? undefined : (() => {
+    const digest = readString(record.sha256, `${path}.sha256`, { max: 64, min: 64 });
+    if (!SHA256_PATTERN.test(digest)) fail(`${path}.sha256`, "must be a lowercase hex SHA-256 digest");
+    return digest;
+  })();
+  const links = readArray(record.links, `${path}.links`).map((entry, index) =>
+    readWorkspaceItemLink(entry, `${path}.links[${index}]`),
+  );
+  const seenLinks = new Set<string>();
+  for (const [index, link] of links.entries()) {
+    const key = `${link.rel}:${link.to}`;
+    if (seenLinks.has(key)) fail(`${path}.links[${index}]`, `duplicate link "${key}"`);
+    seenLinks.add(key);
+  }
+  return {
+    id: readWorkspaceItemId(record.id, `${path}.id`),
+    kind,
+    title: readString(record.title, `${path}.title`, { max: MAX_WORKSPACE_ITEM_TITLE_LENGTH }),
+    ...(record.byteSize === undefined
+      ? {}
+      : { byteSize: readInteger(record.byteSize, `${path}.byteSize`) }),
+    ...(sha256 === undefined ? {} : { sha256 }),
+    ...(sourceId === undefined ? {} : { sourceId }),
+    addedAt: readTimestamp(record.addedAt, `${path}.addedAt`),
+    addedBy: readAddedBy(record.addedBy, `${path}.addedBy`),
+    ...(record.caption === undefined
+      ? {}
+      : { caption: readString(record.caption, `${path}.caption`, { max: 2000 }) }),
+    links,
+  };
+}
+
+function readWorkspaceManifestValue(value: unknown): WorkspaceManifest {
+  const path = "manifest";
+  const record = readObject(value, path);
+  const schemaVersion = record.schemaVersion;
+  if (!Number.isSafeInteger(schemaVersion) || (schemaVersion as number) < 1) {
+    fail(`${path}.schemaVersion`, "must be a positive integer");
+  }
+  const items = readArray(record.items, `${path}.items`);
+  if (items.length > MAX_WORKSPACE_ITEMS) {
+    fail(`${path}.items`, `a workspace carries at most ${MAX_WORKSPACE_ITEMS} items`);
+  }
+  const parsedItems = items.map((entry, index) => readWorkspaceItem(entry, `${path}.items[${index}]`));
+  // Two items share one content file when their ids collide; that is corrupt.
+  const seenIds = new Set<string>();
+  for (const [index, item] of parsedItems.entries()) {
+    if (seenIds.has(item.id)) fail(`${path}.items[${index}]`, `duplicate item id "${item.id}"`);
+    seenIds.add(item.id);
+  }
+  return {
+    schemaVersion: schemaVersion as number,
+    pathId: readId(record.pathId, `${path}.pathId`),
+    updatedAt: readTimestamp(record.updatedAt, `${path}.updatedAt`),
+    items: parsedItems,
+  };
+}
+
+/** Validate a workspace manifest without throwing; invalid input yields precise issues. */
+export function validateWorkspaceManifest(value: unknown): ValidationResult<WorkspaceManifest> {
+  try {
+    return { ok: true, value: readWorkspaceManifestValue(value) };
+  } catch (error) {
+    if (error instanceof DomainValidationError) return { ok: false, issues: error.issues };
+    throw error;
+  }
+}
+
+/** Validate a workspace manifest, throwing `DomainValidationError`. */
+export function parseWorkspaceManifest(value: unknown): WorkspaceManifest {
+  return readWorkspaceManifestValue(value);
+}
+
+/** Validate one workspace item, throwing `DomainValidationError`. */
+export function parseWorkspaceItem(value: unknown): WorkspaceItem {
+  return readWorkspaceItem(value, "item");
+}
+
 /** Human-readable anchor, e.g. `OSTEP — chapter 26, section 27.1, pages 301-320`. */
 export function formatSourceAnchor(anchor: SourceAnchor): string {
   const parts = [
