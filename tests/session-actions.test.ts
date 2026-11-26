@@ -49,6 +49,7 @@ test("registers both actions and explicit top-bar placements for teaching and pr
     assert.deepEqual(
       fixture.actions.map((entry) => [entry.id, entry.name]),
       [
+        ["lp-create-path-from-chat", "Create a Path from This Chat…"],
         ["lp-open-parent-learning-path", "Open Parent Learning Path"],
         ["lp-attach-session-to-path", "Attach Session to Path…"],
       ],
