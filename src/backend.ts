@@ -860,6 +860,35 @@ export function activate(ctx: PluginBackendContext): void {
     };
   });
 
+  /** Read a bounded learner-approved handoff preview for creating a new path. */
+  handle("sessions.toPathPreview", (input) => {
+    const value = object(input, "sessions.toPathPreview");
+    const chatId = readText(value.chatId, "chatId", { max: 128 });
+    if (store.settings().chatToPathEnabled !== true) {
+      throw new Error("Creating a path from a Teaching chat is disabled in Learning Path settings.");
+    }
+    const record = nativeSession(ctx, chatId);
+    if (!record) throw new Error(`Native chat "${chatId}" no longer exists.`);
+    if (nativeKind(record) !== "teaching") {
+      throw new Error("Only Teaching chats can be used to create a Learning Path.");
+    }
+    const listed = ctx.learning.listSessions().find((session) => session.id === chatId);
+    const labels = (record.tree?.nodes ?? [])
+      .map((node) => typeof node.title === "string" ? node.title.trim() : "")
+      .filter(Boolean)
+      .slice(0, 20);
+    const joined = labels.join(" · ");
+    const outline = joined.length > 2_000 ? `${joined.slice(0, 1_997)}…` : joined;
+    return {
+      chatId,
+      title: record.title,
+      kind: "teaching" as const,
+      busy: listed?.busy === true,
+      updatedAt: record.updatedAt,
+      tree: record.tree ? { labels, truncated: labels.length < (record.tree.nodes?.length ?? 0) || joined.length > 2_000 } : null,
+      outline,
+    };
+  });
   /** Native sessions that can be attached; `linked` makes duplicates obvious. */
   handle("sessions.available", () => {
     const sessions = ctx.learning.listSessions().map((chat) => {
@@ -885,6 +914,7 @@ export function activate(ctx: PluginBackendContext): void {
     });
     return { sessions };
   });
+
 
   /** Existence of every linked chat, for missing/relink UI in the Path Hub. */
   handle("sessions.status", (input) => {

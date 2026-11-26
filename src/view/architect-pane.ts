@@ -23,7 +23,7 @@ import type {
 export interface ArchitectPane {
   readonly element: HTMLElement;
   /** Open a fresh draft so the learner can choose a model before the first send. */
-  startNew(): void;
+  startNew(initialDraft?: string): void;
   /** Re-read one conversation snapshot after a notification or resync. */
   load(conversationId: string): Promise<void>;
   /** Apply a change notification: when the committed history is unchanged
@@ -386,7 +386,7 @@ export function createArchitectPane(
     updateComposer();
   }
 
-  function startNew(): void {
+  function startNew(initialDraft = ""): void {
     if (signal.aborted || disposed) return;
     if (busy()) {
       error = "Stop the current Architect run before starting a new path.";
@@ -395,6 +395,7 @@ export function createArchitectPane(
     }
     // Do not allocate a conversation until the learner has chosen the model.
     newDraft = true;
+    draft = initialDraft;
     if (conversation) {
       draft = "";
       model = undefined;

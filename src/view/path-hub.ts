@@ -496,7 +496,8 @@ export function mountPathHub(
     const token = ++loadToken;
     // A top-bar navigation may have arrived before this mount finished loading.
     const target = consumePathHubTarget();
-    if (target) {
+    const architectDraft = target?.architectDraft;
+    if (target && target.pathId) {
       selectedPathId = target.pathId;
       selectedNodeId = target.nodeId;
     }
@@ -533,6 +534,10 @@ export function mountPathHub(
       showError(null);
       renderAll();
 
+      if (architectDraft !== undefined) {
+        refineOpen = true;
+        pane.startNew(architectDraft);
+      }
       if (path?.architectChatId && !pane.isNewDraft() && path.id !== autoLoadedPathId) {
         autoLoadedPathId = path.id;
         if (pane.conversationId() !== path.architectChatId) {
@@ -813,10 +818,16 @@ export function mountPathHub(
   const offNavigation = subscribePathHubTarget((target) => {
     if (signal.aborted || disposed) return;
     consumePathHubTarget();
-    if (path?.id === target.pathId) {
+    if (path?.id === target.pathId && target.architectDraft === undefined) {
       selectedPathId = target.pathId;
       selectedNodeId = target.nodeId;
       renderAll();
+      return;
+    }
+    if (target.architectDraft !== undefined) {
+      refineOpen = true;
+      pane.startNew(target.architectDraft);
+      renderHeader();
       return;
     }
     selectedPathId = target.pathId;

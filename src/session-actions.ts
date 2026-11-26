@@ -15,7 +15,7 @@ import { createSessionLauncher } from "./session-launcher.ts";
 import type { SessionLauncher } from "./session-launcher.ts";
 import { requestPathHubTarget } from "./session-navigation.ts";
 import type { SessionParentResult } from "./session-types.ts";
-import { openAttachSessionDialog } from "./view/session-dialogs.ts";
+import { openAttachSessionDialog, openCreatePathFromChatDialog } from "./view/session-dialogs.ts";
 
 export interface SessionActionOptions {
   /** Injectable launcher; production creates one bound to the activation. */
@@ -28,6 +28,31 @@ export function registerSessionActions(
 ): () => void {
   const launcher = options.launcher ?? createSessionLauncher(ctx);
   const disposers: (() => void)[] = [];
+  let chatToPathEnabled = false;
+  void ctx.call<{ settings: { chatToPathEnabled?: boolean } }>("settings.get")
+    .then((result) => { chatToPathEnabled = result.settings.chatToPathEnabled === true; ctx.refreshActions(); })
+    .catch(() => { chatToPathEnabled = false; });
+
+
+  disposers.push(
+    ctx.registerAction({
+      id: "lp-create-path-from-chat",
+      name: "Create a Path from This Chat…",
+      disabled: (context) => context.surface !== "session" || context.kind !== "teaching" || !chatToPathEnabled,
+      run: async (context: PluginActionContext) => {
+        if (context.surface !== "session" || context.kind !== "teaching") return;
+        openCreatePathFromChatDialog(ctx, { chatId: context.sessionId, signal: ctx.signal });
+      },
+    }),
+  );
+  disposers.push(
+    ctx.placeAction({
+      id: "lp-create-path-from-chat-top-bar",
+      actionId: "lp-create-path-from-chat",
+      location: "top-bar",
+      sessions: ["teaching"],
+    }),
+  );
 
   disposers.push(
     ctx.registerAction({

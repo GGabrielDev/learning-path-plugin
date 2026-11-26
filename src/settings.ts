@@ -155,6 +155,15 @@ export function mountSettingsPage(
   const graphHost = element(document, "div", "lp-settings-rows");
   graphSection.append(graphHost);
 
+  const chatSection = section(
+    document,
+    root,
+    "Create a path from a Teaching chat (experimental)",
+    "Off by default. When enabled, a learner can review a bounded saved-session outline and open an unsent Architect draft; no path is saved until the learner sends and approves it.",
+  );
+  const chatHost = element(document, "div", "lp-settings-rows");
+  chatSection.append(chatHost);
+
   const architectSection = section(
     document,
     root,
@@ -179,7 +188,9 @@ export function mountSettingsPage(
   let summaries: readonly PathSummary[] = [];
   let artifactRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
   let graphRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
+  let chatRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
   let graphSaving = false;
+  let chatSaving = false;
   let architectHandles: PluginWidgetHandle<unknown>[] = [];
   let pathHandles: PluginWidgetHandle<unknown>[] = [];
   const dialogs: PluginWidgetHandle<PluginDialogProps>[] = [];
@@ -271,6 +282,31 @@ export function mountSettingsPage(
     }];
     if (graphRows) graphRows.update({ rows });
     else graphRows = ctx.ui.mountSettingsRows(graphHost, { rows }, { signal });
+  }
+
+  function renderChatRows(): void {
+    if (disposed || signal.aborted) return;
+    const rows: PluginSettingsRow[] = [{
+      key: "chat-to-path-enabled",
+      type: "toggle",
+      label: "Enable Teaching-chat path creation",
+      description: "Allow the session top-bar action to create an unsent Architect draft from a saved Teaching chat.",
+      value: settings.chatToPathEnabled === true,
+      disabled: chatSaving,
+      onChange: async (value: boolean) => {
+        if (chatSaving) return;
+        chatSaving = true;
+        renderChatRows();
+        try {
+          await saveSettings({ ...settings, chatToPathEnabled: value });
+        } finally {
+          chatSaving = false;
+          renderChatRows();
+        }
+      },
+    }];
+    if (chatRows) chatRows.update({ rows });
+    else chatRows = ctx.ui.mountSettingsRows(chatHost, { rows }, { signal });
   }
 
   function preferences(): ArchitectPreferences {
@@ -603,9 +639,9 @@ export function mountSettingsPage(
     } catch (problem) {
       if (disposed || signal.aborted) return false;
       setStatus(`Could not save settings: ${errorMessage(problem)}`, "error");
-      // Restore the controlled widgets to the last accepted record.
       renderArtifactRows();
       renderGraphRows();
+      renderChatRows();
       renderArchitect();
       return false;
     }
@@ -620,6 +656,7 @@ export function mountSettingsPage(
     );
     renderArtifactRows();
     renderGraphRows();
+    renderChatRows();
     renderArchitect();
   }
 
@@ -637,6 +674,7 @@ export function mountSettingsPage(
       summaries = [...(pathsResult.paths ?? [])];
       renderArtifactRows();
       renderGraphRows();
+      renderChatRows();
       renderArchitect();
       renderPaths();
       setStatus(null);
@@ -669,8 +707,8 @@ export function mountSettingsPage(
     dialogs.length = 0;
     clearArchitect();
     clearPaths();
-    artifactRows?.dispose();
-    artifactRows = null;
+    chatRows?.dispose();
+    chatRows = null;
     graphRows?.dispose();
     graphRows = null;
     root.remove();

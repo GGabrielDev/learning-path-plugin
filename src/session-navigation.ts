@@ -9,6 +9,7 @@
 export interface PathHubTarget {
   readonly pathId: string;
   readonly nodeId: string;
+  readonly architectDraft?: string;
 }
 
 let pending: PathHubTarget | null = null;
@@ -18,13 +19,14 @@ const listeners = new Set<(target: PathHubTarget) => void>();
 export function requestPathHubTarget(target: PathHubTarget): void {
   pending = target;
   for (const listener of [...listeners]) {
-    try {
-      listener(target);
-    } catch {
-      // A listener failing must not block navigation or the other listeners.
-    }
+    try { listener(target); } catch { /* isolate listeners */ }
   }
 }
+
+export function requestPathHubDraft(draft: string): void {
+  requestPathHubTarget({ pathId: "", nodeId: "", architectDraft: draft });
+}
+
 
 /** Take (and clear) the pending target once; a later mount does not re-navigate. */
 export function consumePathHubTarget(): PathHubTarget | null {
