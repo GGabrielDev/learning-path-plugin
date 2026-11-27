@@ -152,10 +152,15 @@ export function makeConversation(
 }
 
 function renderTreeContent(record: MountRecord): void {
+  // Cells mount like row content, keyed per column: a host that renders
+  // columns attaches each cell under its own mount point.
   const visible = new Map<string, PluginUiContent>();
   const visit = (rows: readonly PluginTreeRow[]) => {
     for (const row of rows) {
-      if (typeof row.content !== "string") visible.set(row.key, row.content);
+      if (typeof row.content !== "string") visible.set(`${row.key}:content`, row.content);
+      for (const [key, cell] of Object.entries(row.cells ?? {})) {
+        if (typeof cell !== "string") visible.set(`${row.key}:${key}`, cell);
+      }
       if (row.children && (!row.disclosure || row.disclosure.expanded)) visit(row.children);
     }
   };
@@ -210,8 +215,9 @@ export interface FixtureOptions {
   conversations?: readonly PluginAgentSnapshot[];
   nativeChats?: readonly NativeChatFixture[];
   settings?: PluginSettings;
-  /** Initial workspace items for the first fixture path, content verbatim. */
-  workspaceItems?: readonly { item: WorkspaceItem; content: string }[];
+  /** Initial workspace items for the first fixture path, content verbatim; a
+   * null content marks a source, which references the global library. */
+  workspaceItems?: readonly { item: WorkspaceItem; content: string | null }[];
 }
 
 export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
@@ -787,7 +793,8 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
           deduplicated: false,
         } as T);
       }
-      case "workspace.list": {
+      case "workspace.list":
+      case "workspace.resync": {
         if (String(value.pathId) !== workspacePathId) {
           return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));
         }
@@ -800,7 +807,7 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
                 updatedAt: "2026-02-01T00:00:00.000Z",
                 items: workspaceItems.map((entry) => structuredClone(entry.item)),
               };
-        return Promise.resolve({ workspace: manifest } as T);
+        return Promise.resolve({ workspace: manifest, changed: false } as T);
       }
       case "workspace.saveNote": {
         if (String(value.pathId) !== workspacePathId) {
@@ -887,6 +894,29 @@ export function createViewFixture(options: FixtureOptions = {}): ViewFixture {
         const index = workspaceItems.findIndex((entry) => entry.item.id === String(value.itemId));
         if (index !== -1) workspaceItems.splice(index, 1);
         return Promise.resolve({ deleted: index !== -1 } as T);
+      }
+      case "workspace.openDirectory": {
+        if (String(value.pathId) !== workspacePathId) {
+          return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));
+        }
+        return Promise.resolve({ directory: `/tmp/learning-path/${String(value.pathId)}/workspaces` } as T);
+      }
+      case "workspace.openItem": {
+        if (String(value.pathId) !== workspacePathId) {
+          return Promise.reject(new Error(`Unknown path: ${String(value.pathId)}`));
+        }
+        const entry = workspaceItems.find((candidate) => candidate.item.id === String(value.itemId));
+        if (!entry) {
+          return Promise.reject(new Error(`Unknown workspace item: ${String(value.itemId)}`));
+        }
+        if (entry.item.kind === "source") {
+          return Promise.reject(
+            new Error(`The workspace item carries no content file to open: ${String(value.itemId)}`),
+          );
+        }
+        return Promise.resolve({
+          file: `/tmp/learning-path/${String(value.pathId)}/files/${String(value.itemId)}.md`,
+        } as T);
       }
       default:
         return Promise.reject(new Error(`Unexpected operation: ${name}`));

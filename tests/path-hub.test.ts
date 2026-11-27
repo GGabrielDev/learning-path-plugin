@@ -35,6 +35,21 @@ function liveButtons(fixture: ViewFixture): MountRecord[] {
   return fixture.all("mountButton");
 }
 
+/** A pointer event carrying the fields the bar's drag handler reads; the
+ * test double's generic Event carries none of them by default. */
+function pointerEvent(
+  document: Document,
+  type: string,
+  fields: { pointerId?: number; clientX?: number; clientY?: number; button?: number } = {},
+): Event {
+  const event = document.createEvent("Event");
+  event.initEvent(type, true, true);
+  for (const [key, value] of Object.entries(fields)) {
+    Object.defineProperty(event, key, { configurable: true, value });
+  }
+  return event;
+}
+
 async function mounted(fixture: ViewFixture): Promise<HTMLElement> {
   const container = fixture.root;
   fixture.context.signal.addEventListener("abort", () => container.replaceChildren());
@@ -616,15 +631,225 @@ test("the detailed view floats: it never squeezes the roadmap, and Close deselec
     assert.equal(pane.hidden, true, "a background refresh never reopens the closed window");
     assert.ok(!fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId);
     assert.equal(
-      body.querySelectorAll(":scope > *").length,
+      body.querySelectorAll<HTMLElement>(":scope > *").length,
       2,
-      "the body keeps exactly the roadmap pane and the Architect pane",
+      "the body keeps exactly the roadmap pane and the Architect pane — the details and their workspace tab float",
     );
 
     // Reopening via a card click brings the same inspector back.
     await selectRoadmapCard(fixture.root, "n-concept");
     assert.equal(pane.hidden, false);
     assert.equal(fixture.root.querySelector<HTMLElement>(".lp-inspector")!.dataset.nodeId, "n-concept");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("the floating details auto-hide their title bar on scroll and expand on demand", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({
+    paths: [path],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+
+    // The frame carries a drag grip; an inner scroller owns the overflow so
+    // the grip never scrolls with the content, and the bar sits inside it.
+    const pane = fixture.root.querySelector<HTMLElement>(".lp-inspector-pane")!;
+    const scroller = pane.querySelector<HTMLElement>(".lp-inspector-scroll")!;
+    const bar = pane.querySelector<HTMLElement>(".lp-inspector-bar")!;
+    assert.ok(pane.querySelector(".lp-inspector-grip"), "the frame exposes a resize grip");
+    assert.ok(!bar.classList.contains("lp-inspector-bar-hidden"), "the bar starts visible");
+
+    // Scrolling down past the threshold fades the bar out of the way…
+    scroller.scrollTop = 100;
+    fire(scroller, "scroll");
+    assert.ok(bar.classList.contains("lp-inspector-bar-hidden"), "scrolling down hides the bar");
+
+    // …and scrolling back up brings the title, Expand and Close back.
+    scroller.scrollTop = 40;
+    fire(scroller, "scroll");
+    assert.ok(!bar.classList.contains("lp-inspector-bar-hidden"), "scrolling up restores the bar");
+
+    // Switching nodes rewinds to the top with the bar in place.
+    scroller.scrollTop = 100;
+    fire(scroller, "scroll");
+    assert.ok(bar.classList.contains("lp-inspector-bar-hidden"));
+    await selectRoadmapCard(fixture.root, "n-concept");
+    assert.ok(!bar.classList.contains("lp-inspector-bar-hidden"), "a fresh node starts unscrolled");
+
+    // Expand stretches the window across the hub; Restore brings it back. Both
+    // are icon-only: the label stays the accessible name, the icon points to
+    // the corners when collapsed and inward when stretched.
+    const expand = liveButtons(fixture).find((button) => button.props.label === "Expand")!;
+    assert.ok(expand, "the bar carries an expand control");
+    assert.equal(expand.props.iconOnly, true, "the expand control is an icon-only button");
+    assert.match(String(expand.props.icon ?? ""), /M8 3H5/, "the expand icon points to the corners");
+    assert.equal(pane.style.top, "12px", "the floating window pins under the header");
+    await expand.props.onClick();
+    assert.ok(pane.classList.contains("lp-inspector-expanded"), "expanding widens the window");
+    assert.equal(
+      pane.style.top,
+      "12px",
+      "the expanded window keeps the same measured pin — just below the header, flush at the viewport margin once the page scrolls past it — so its bar never tucks under the header (zero rects here pin the margin)",
+    );
+    const restore = liveButtons(fixture).find((button) => button.props.label === "Restore")!;
+    assert.ok(restore, "the expand control becomes a restore control");
+    assert.match(String(restore.props.icon ?? ""), /M8 3v3/, "the restore icon points inward");
+    await restore.props.onClick();
+    assert.ok(!pane.classList.contains("lp-inspector-expanded"), "restoring returns to the half");
+    assert.equal(pane.style.top, "12px", "restoring brings the measured pin back");
+
+    // Close is an X, and still deselects with the new bar layout.
+    const close = liveButtons(fixture).find((button) => button.props.label === "Close")!;
+    assert.equal(close.props.iconOnly, true, "the close control is an icon-only button");
+    assert.match(String(close.props.icon ?? ""), /M18 6 6 18/, "the close icon is an X");
+    await close.props.onClick();
+    await fixture.flush();
+    assert.equal(pane.hidden, true, "close keeps working from the auto-hiding bar");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("dragging the bar moves the window vertically and horizontally; double-click resets", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    await mounted(fixture);
+    const pane = fixture.root.querySelector<HTMLElement>(".lp-inspector-pane")!;
+    const bar = pane.querySelector<HTMLElement>(".lp-inspector-bar")!;
+    // Zero rects in the test host pin the window at the viewport margin; the
+    // horizontal offset rides the same mechanism (left is only set from a
+    // measured hub rect, which this host does not provide).
+    assert.equal(pane.style.top, "12px");
+
+    const doc = fixture.root.ownerDocument;
+    // Drag down 100, then back up 40 within the same press.
+    bar.dispatchEvent(pointerEvent(doc, "pointerdown", { pointerId: 7, clientX: 300, clientY: 20, button: 0 }));
+    bar.dispatchEvent(pointerEvent(doc, "pointermove", { pointerId: 7, clientX: 300, clientY: 120 }));
+    assert.equal(pane.style.top, "112px", "the window follows the drag downward");
+    bar.dispatchEvent(pointerEvent(doc, "pointermove", { pointerId: 7, clientX: 250, clientY: 60 }));
+    assert.equal(pane.style.top, "52px", "the offset rides along, up and down");
+    bar.dispatchEvent(pointerEvent(doc, "pointerup", { pointerId: 7 }));
+
+    // The dragged offset survives a background refresh.
+    fixture.emit("paths-changed", { id: path.id });
+    await fixture.flush();
+    assert.equal(pane.style.top, "52px", "refreshes keep the dragged position");
+
+    // Never above the viewport margin, however far up the pointer goes.
+    bar.dispatchEvent(pointerEvent(doc, "pointerdown", { pointerId: 8, clientX: 300, clientY: 40, button: 0 }));
+    bar.dispatchEvent(pointerEvent(doc, "pointermove", { pointerId: 8, clientX: 300, clientY: -600 }));
+    assert.equal(pane.style.top, "12px", "the window never leaves the viewport");
+    bar.dispatchEvent(pointerEvent(doc, "pointerup", { pointerId: 8 }));
+
+    // A double-click on the bar puts the window back where it pins.
+    bar.dispatchEvent(pointerEvent(doc, "pointerdown", { pointerId: 9, clientX: 300, clientY: 20, button: 0 }));
+    bar.dispatchEvent(pointerEvent(doc, "pointermove", { pointerId: 9, clientX: 300, clientY: 120 }));
+    bar.dispatchEvent(pointerEvent(doc, "pointerup", { pointerId: 9 }));
+    assert.equal(pane.style.top, "112px");
+    fire(bar, "dblclick");
+    assert.equal(pane.style.top, "12px", "a double-click resets the pinned default");
+
+    // A press on a tab is the tab's own, never a window move.
+    const tab = bar.querySelector<HTMLElement>(".lp-tab")!;
+    tab.dispatchEvent(pointerEvent(doc, "pointerdown", { pointerId: 10, clientX: 30, clientY: 20, button: 0 }));
+    tab.dispatchEvent(pointerEvent(doc, "pointermove", { pointerId: 10, clientX: 30, clientY: 220 }));
+    assert.equal(pane.style.top, "12px", "the tab's own press is not a window move");
+    tab.dispatchEvent(pointerEvent(doc, "pointerup", { pointerId: 10 }));
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("the floating window stays below the host's standing view header while the view scrolls", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    // The real host keeps its view header ("Learning Paths") standing above
+    // the plugin's own scrolling region: a static top bar beside a scroll
+    // container, so scrolling the region never moves the header. This test
+    // host has no layout engine, so the chrome is stubbed to that shape.
+    const doc = fixture.root.ownerDocument;
+    const topBar = doc.createElement("header");
+    topBar.textContent = "Learning Paths";
+    const scrollRegion = doc.createElement("div");
+    topBar.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 60, left: 0, right: 1024, width: 1024, height: 60, x: 0, y: 0, toJSON() {} }) as DOMRect;
+    scrollRegion.getBoundingClientRect = () =>
+      ({ top: 60, bottom: 800, left: 0, right: 1024, width: 1024, height: 740, x: 0, y: 60, toJSON() {} }) as DOMRect;
+    Object.defineProperty(scrollRegion, "scrollHeight", { value: 4000 });
+    Object.defineProperty(scrollRegion, "clientHeight", { value: 740 });
+    doc.body.insertBefore(topBar, fixture.root);
+    doc.body.insertBefore(scrollRegion, fixture.root);
+    scrollRegion.append(fixture.root);
+    const view = doc.defaultView as unknown as {
+      getComputedStyle?: (candidate: Element) => { position: string; overflowY: string };
+    };
+    view.getComputedStyle = (candidate: Element) => ({
+      position: "static",
+      overflowY: candidate === (scrollRegion as Element) ? "auto" : "visible",
+    });
+
+    await mounted(fixture);
+    await selectRoadmapCard(fixture.root, "n-skill");
+    const pane = fixture.root.querySelector<HTMLElement>(".lp-inspector-pane")!;
+    assert.equal(pane.style.top, "72px", "the pin clears the standing header (60 + 12 breathing room)");
+
+    // Scrolling the plugin's own region re-pins under the header instead of
+    // jumping to the viewport top, in both window shapes.
+    fire(scrollRegion, "scroll");
+    assert.equal(pane.style.top, "72px", "scrolling keeps the window under the standing header");
+    const expand = liveButtons(fixture).find((button) => button.props.label === "Expand")!;
+    await expand.props.onClick();
+    assert.equal(pane.style.top, "72px", "the expanded window clears the standing header too");
+    const restore = liveButtons(fixture).find((button) => button.props.label === "Restore")!;
+    await restore.props.onClick();
+
+    // Dragging up cannot tuck the window under the header either.
+    const bar = pane.querySelector<HTMLElement>(".lp-inspector-bar")!;
+    bar.dispatchEvent(pointerEvent(doc, "pointerdown", { pointerId: 11, clientX: 300, clientY: 80, button: 0 }));
+    bar.dispatchEvent(pointerEvent(doc, "pointermove", { pointerId: 11, clientX: 300, clientY: -400 }));
+    assert.equal(pane.style.top, "72px", "a drag never lifts the window above the header pin");
+    bar.dispatchEvent(pointerEvent(doc, "pointerup", { pointerId: 11 }));
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("the floating window stays below host chrome that is stuck over the scrolling content", async () => {
+  const path = makePath();
+  const fixture = createViewFixture({ paths: [path] });
+  try {
+    await mounted(fixture);
+
+    // Other hosts pin their header over the content with position: sticky.
+    // The chrome is stubbed: a sticky header element above the plugin's
+    // container with a measured-looking rect, and a getComputedStyle that
+    // reports its position.
+    const doc = fixture.root.ownerDocument;
+    const hostHeader = doc.createElement("header");
+    hostHeader.className = "host-view-header";
+    hostHeader.textContent = "Learning Paths";
+    hostHeader.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 56, left: 0, right: 1024, width: 1024, height: 56, x: 0, y: 0, toJSON() {} }) as DOMRect;
+    doc.body.insertBefore(hostHeader, fixture.root);
+    const view = doc.defaultView as unknown as {
+      getComputedStyle?: (candidate: Element) => { position: string; overflowY: string };
+    };
+    view.getComputedStyle = (candidate: Element) => ({
+      position: candidate === (hostHeader as Element) ? "sticky" : "static",
+      overflowY: "visible",
+    });
+
+    await selectRoadmapCard(fixture.root, "n-skill");
+    const pane = fixture.root.querySelector<HTMLElement>(".lp-inspector-pane")!;
+    assert.equal(pane.style.top, "68px", "the pin clears the stuck host header (56 + 12 breathing room)");
+
+    fire(fixture.root, "scroll");
+    assert.equal(pane.style.top, "68px", "scrolling keeps the window under the stuck header");
   } finally {
     fixture.restore();
   }

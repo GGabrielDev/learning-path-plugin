@@ -583,6 +583,17 @@ function readWorkspaceItemTool(
             }.`,
           );
         }
+        // Context is link-scoped: agents may only read items linked to the
+        // node this session is for. The learner's unlinked browsing material
+        // stays invisible to agent context.
+        const nodeId = located.node.id;
+        const linked = item.links.some((link) => link.to === nodeId);
+        if (!linked) {
+          throw new Error(
+            `Workspace item "${item.title}" is not linked to this node (${nodeId}). ` +
+              `Linked items only: ${items.filter((i) => i.links.some((l) => l.to === nodeId)).map(known).join(", ") || "none"}.`,
+          );
+        }
         // A source item references the global sources store; its text is read
         // there, under the same bounded window as every other kind.
         const markdown = item.kind === "source"

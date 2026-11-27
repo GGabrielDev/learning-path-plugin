@@ -11,6 +11,13 @@
  * hierarchy with subtree counts, and cards can be filtered by folder as well as
  * by tag. Folder edits ride the same `paths.updateMeta` dialog.
  *
+ * Each card's foot carries filing and removal: a tag glyph opens the tags
+ * dialog, a trashcan opens the delete one — the Settings page's same
+ * `paths.delete` write, confirmed by a dialog that names exactly what goes
+ * (the path record, its workspace, orphaned converted uploads) and what
+ * stays (native chats, Knowledge Graph records). A success hands the
+ * refetch to the hub, which reselects exactly as for any other change.
+ *
  * There is deliberately no scheduling surface here: no dates, hours, streaks
  * or completion percentages. The Architect has no tool that writes tags or
  * folders, so how a path is filed never drifts from what it teaches.
@@ -24,11 +31,40 @@ import {
 } from "../domain.ts";
 import type { PathSummary } from "./path-hub.ts";
 
+/** Trusted SVG markup for the card's icon-only host buttons (24×24
+ * lucide-style line art, matching the hub's window-bar icons). */
+const cardIcon = (paths: string): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+
+/** A tag: the card's one filing affordance. The label stays the accessible
+ * name and the title the hover tooltip, so the word is never hidden from
+ * hover or a screen reader. */
+const TAG_ICON = cardIcon(
+  '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5"/>',
+);
+/** A trashcan: the card's one removal affordance (the Settings page's same
+ * RPC; the confirm dialog carries the words). */
+const TRASH_ICON = cardIcon(
+  '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+);
+
 export interface PathsOverviewOptions {
   /** A card click switches the hub to that path, like the header select. */
   selectPath(pathId: string): void;
   /** Called once after a successful tag save; the hub refetches. */
   tagsChanged(): void;
+  /** Called once after a path deletion; the hub refetches (and reselects,
+   * exactly as it does for every other paths-changed event). */
+  pathsChanged(): void;
+}
+
+/** paths.delete answers with what the one write removed — the Settings
+ * page's same flow. Native chats and Knowledge Graph records stay untouched. */
+interface DeleteResult {
+  readonly deleted: boolean;
+  readonly removedSources: readonly string[];
+  readonly retainedSources: readonly string[];
+  readonly preservedChats: number;
 }
 
 export interface PathsOverview {
@@ -307,7 +343,13 @@ export function createPathsOverview(
     parent: HTMLElement,
     label: string,
     onClick: () => void,
-    extra: { variant?: "default" | "link" | "outline" | "ghost" | "secondary"; size?: "xs" | "sm" } = {},
+    extra: {
+      variant?: "default" | "link" | "outline" | "ghost" | "secondary";
+      size?: "xs" | "sm";
+      title?: string;
+      icon?: string;
+      iconOnly?: boolean;
+    } = {},
   ): void => {
     const host = element(document, "span", "lp-button-host");
     parent.append(host);
@@ -318,6 +360,9 @@ export function createPathsOverview(
           label,
           variant: extra.variant ?? "outline",
           size: extra.size ?? "xs",
+          ...(extra.title === undefined ? {} : { title: extra.title }),
+          ...(extra.icon === undefined ? {} : { icon: extra.icon }),
+          ...(extra.iconOnly === undefined ? {} : { iconOnly: extra.iconOnly }),
           onClick: () => {
             if (!signal.aborted && !disposed) onClick();
           },
@@ -326,6 +371,98 @@ export function createPathsOverview(
       ),
     );
   };
+
+  /** Deleting a path is the Settings page's same one write (`paths.delete`):
+   * only plugin-owned records go — the path, its workspace and orphaned
+   * converted uploads. The dialog names exactly what leaves and what stays
+   * (native chats and Knowledge Graph records are never touched), a
+   * failure stays in the dialog, and a success hands the refetch to the hub. */
+  function openDeleteDialog(summary: PathSummary): void {
+    if (disposed || signal.aborted) return;
+    let dialog: PluginWidgetHandle<never> | null = null;
+    const close = (): void => {
+      const current = dialog;
+      dialog = null;
+      current?.dispose();
+    };
+
+    dialog = ctx.ui.openDialog(
+      {
+        title: `Delete the learning path "${summary.title}"?`,
+        content: (contentContainer: HTMLElement, contentSignal: AbortSignal) => {
+          const doc = contentContainer.ownerDocument;
+          const dialogRoot = element(doc, "div", "lp-delete-dialog");
+          dialogRoot.append(element(doc, "h2", "lp-dialog-title", summary.title));
+          dialogRoot.append(
+            element(
+              doc,
+              "p",
+              "lp-dialog-text",
+              `This deletes the plugin's path record (${summary.moduleCount} module(s), ${summary.nodeCount} node(s)), ` +
+                "its workspace and any converted source files no other path uses.",
+            ),
+          );
+          dialogRoot.append(
+            element(
+              doc,
+              "p",
+              "lp-dialog-text lp-dialog-safe",
+              "Native LearnHarness chats and Knowledge Graph records are never deleted by this action.",
+            ),
+          );
+          const error = element(doc, "p", "lp-dialog-error");
+          error.setAttribute("role", "alert");
+          error.hidden = true;
+          dialogRoot.append(error);
+          const actions = element(doc, "div", "lp-dialog-actions");
+          dialogRoot.append(actions);
+          contentContainer.append(dialogRoot);
+
+          const keepHost = element(doc, "span", "lp-button-host");
+          actions.append(keepHost);
+          ctx.ui.mountButton(
+            keepHost,
+            {
+              label: "Keep path",
+              variant: "outline",
+              size: "sm",
+              onClick: () => close(),
+            },
+            { signal: contentSignal },
+          );
+
+          const deleteHost = element(doc, "span", "lp-button-host");
+          actions.append(deleteHost);
+          const remove = ctx.ui.mountButton(
+            deleteHost,
+            {
+              label: "Delete path",
+              variant: "destructive",
+              size: "sm",
+              onClick: async () => {
+                if (contentSignal.aborted || disposed || signal.aborted) return;
+                error.hidden = true;
+                remove.update({ disabled: true, label: "Deleting…" });
+                try {
+                  await ctx.call<DeleteResult>("paths.delete", { pathId: summary.id });
+                  if (contentSignal.aborted || disposed || signal.aborted) return;
+                  close();
+                  options.pathsChanged();
+                } catch (problem) {
+                  if (contentSignal.aborted || disposed || signal.aborted) return;
+                  error.textContent = `Could not delete "${summary.title}": ${describeError(problem)}`;
+                  error.hidden = false;
+                  remove.update({ disabled: false, label: "Delete path" });
+                }
+              },
+            },
+            { signal: contentSignal },
+          );
+        },
+      },
+      { signal },
+    ) as PluginWidgetHandle<never>;
+  }
 
   /** Tags are learner filing. The dialog is the only writer, and it saves
    * through `paths.updateMeta`, never through the Architect conversation. */
@@ -463,7 +600,6 @@ export function createPathsOverview(
 
     const header = element(document, "header", "lp-path-card-header");
     button(header, summary.title, () => options.selectPath(summary.id), { variant: "link", size: "sm" });
-    button(header, "Edit tags", () => openTagsDialog(summary), { variant: "outline", size: "xs" });
     cardRoot.append(header);
 
     // The whole card selects the path; the title button stays the accessible
@@ -530,6 +666,27 @@ export function createPathsOverview(
       }
       cardRoot.append(row);
     }
+
+    // Filing and removal live at the card's foot: a tag glyph opens the tags
+    // dialog, a trashcan opens the delete one. Icon-only, like the ledger's
+    // row actions — the label stays the accessible name and the hover title
+    // carries the words.
+    const footer = element(document, "div", "lp-path-card-footer");
+    button(footer, "Edit tags", () => openTagsDialog(summary), {
+      variant: "outline",
+      size: "xs",
+      title: `Edit tags — ${summary.title}`,
+      icon: TAG_ICON,
+      iconOnly: true,
+    });
+    button(footer, "Delete path", () => openDeleteDialog(summary), {
+      variant: "ghost",
+      size: "xs",
+      title: `Delete ${summary.title}`,
+      icon: TRASH_ICON,
+      iconOnly: true,
+    });
+    cardRoot.append(footer);
 
     cards.append(cardRoot);
   }

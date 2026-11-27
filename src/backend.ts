@@ -16,6 +16,7 @@
  * runs, `cleanup` releases handlers, subscriptions, the bridge and the definition,
  * and no tool writes after the signal aborts.
  */
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type {
   ModelCatalogResponse,
@@ -334,7 +335,86 @@ function updateNodeInPath(
   };
 }
 
-export function activate(ctx: PluginBackendContext): void {
+/** The OS file-manager command per platform; every other platform falls back
+ * to the freedesktop opener. Exported for documentation and tests. */
+const PLATFORM_FILE_MANAGERS: Readonly<Partial<Record<NodeJS.Platform, string>>> = {
+  darwin: "open",
+  win32: "explorer",
+};
+const FALLBACK_FILE_MANAGER = "xdg-open";
+
+/** Reveal one directory in the host OS's file manager. The child is detached
+ * and unref'd so the backend never waits on a GUI window; a missing opener
+ * rejects so the frontend can surface the failure. */
+export async function revealInFileManager(directory: string): Promise<void> {
+  const command = PLATFORM_FILE_MANAGERS[process.platform] ?? FALLBACK_FILE_MANAGER;
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, [directory], { detached: true, stdio: "ignore" });
+    child.once("error", (problem) => {
+      reject(
+        new Error(
+          `Could not open the file manager (${command}): ${
+            problem instanceof Error ? problem.message : String(problem)
+          }`,
+        ),
+      );
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+/** The OS opener per platform for handing one file to the learner's chosen
+ * application. Windows shows its native "How do you want to open this file?"
+ * chooser (OpenAs_RunDLL) so the learner always picks the application; macOS
+ * and the freedesktop fallback open the registered default and the OS itself
+ * prompts for an application wherever none is registered. Exported for
+ * documentation and tests. */
+const PLATFORM_OPENERS: Readonly<
+  Partial<Record<NodeJS.Platform, { readonly command: string; readonly args: readonly string[] }>>
+> = {
+  darwin: { command: "open", args: [] },
+  win32: { command: "rundll32", args: ["shell32.dll,OpenAs_RunDLL"] },
+};
+const FALLBACK_OPENER = { command: "xdg-open", args: [] } as const;
+
+/** Hand one file to the OS, which opens it in an application of the learner's
+ * choosing (prompting for one where no default is registered). The child is
+ * detached and unref'd so the backend never waits on a GUI window; a missing
+ * opener rejects so the frontend can surface the failure. */
+export async function openWithApplicationChooser(file: string): Promise<void> {
+  const opener = PLATFORM_OPENERS[process.platform] ?? FALLBACK_OPENER;
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(opener.command, [...opener.args, file], { detached: true, stdio: "ignore" });
+    child.once("error", (problem) => {
+      reject(
+        new Error(
+          `Could not open the file in an editor (${opener.command}): ${
+            problem instanceof Error ? problem.message : String(problem)
+          }`,
+        ),
+      );
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+/** Optional activation seams, so tests never spawn a real GUI process. */
+export interface BackendActivationOptions {
+  /** Replace the OS file-manager opener behind workspace.openDirectory. */
+  readonly openInFileManager?: (directory: string) => Promise<void>;
+  /** Replace the OS application opener behind workspace.openItem. */
+  readonly openWithApplicationChooser?: (file: string) => Promise<void>;
+}
+
+export function activate(ctx: PluginBackendContext, options: BackendActivationOptions = {}): void {
+  const openInFileManager = options.openInFileManager ?? revealInFileManager;
+  const openInApplication = options.openWithApplicationChooser ?? openWithApplicationChooser;
   const store: LearningPathStore = openLearningPathStore(ctx.dataDirectory);
   const disposers: (() => void)[] = [];
   const watchers = new Map<string, () => void>();
@@ -879,6 +959,22 @@ export function activate(ctx: PluginBackendContext): void {
     return { workspace: store.workspace(pathId) };
   });
 
+  // Bidirectional sync: files are the truth. The manifest re-hydrates from
+  // the content files — an external edit to a file's frontmatter or body wins,
+  // and a file the learner added outside the harness materializes as an
+  // item. The hub calls this on every refresh, so the ledger reflects the
+  // learner's editor the next time anyone looks; the change notification lets
+  // any other open window refetch too.
+  handle("workspace.resync", (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "workspace.resync");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    const { changed } = store.syncWorkspaceFromFiles(pathId);
+    if (changed) emit(EVENT_WORKSPACE_CHANGED, { pathId });
+    return { workspace: store.workspace(pathId), changed };
+  });
+
   handle("workspace.saveNote", (input) => {
     if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
     const value = object(input, "workspace.saveNote");
@@ -1022,6 +1118,37 @@ export function activate(ctx: PluginBackendContext): void {
     const deleted = store.deleteWorkspaceItem(pathId, itemId);
     if (deleted) emit(EVENT_WORKSPACE_CHANGED, { pathId, itemId, deleted: true });
     return { deleted };
+  });
+
+  // Open the path's workspace folder in the host OS file manager. The folder
+  // materializes on demand so an empty workspace opens too; the manifest and
+  // content files stay learner material, never agent-visible data.
+  handle("workspace.openDirectory", async (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "workspace.openDirectory");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    const directory = store.ensureWorkspaceDirectory(pathId);
+    await openInFileManager(directory);
+    return { directory };
+  });
+
+  // Hand one item's content file to the OS: the learner's chosen application
+  // opens it (the OS prompts for one wherever no default is registered), and
+  // whatever the editor writes back lands through workspace.resync. The file
+  // keeps its frontmatter; sources carry no file of their own and are refused.
+  handle("workspace.openItem", async (input) => {
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const value = object(input, "workspace.openItem");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    if (!store.path(pathId)) throw new Error(`Unknown path: ${pathId}`);
+    const itemId = readText(value.itemId, "itemId", { max: 128 });
+    const file = store.workspaceItemFile(pathId, itemId);
+    if (!file) {
+      throw new Error(`The workspace item carries no content file to open: ${itemId}`);
+    }
+    await openInApplication(file);
+    return { file };
   });
 
   // ---- Child sessions -----------------------------------------------------

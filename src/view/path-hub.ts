@@ -95,6 +95,24 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+/** Trusted SVG markup for the window bar's icon-only host buttons (24×24
+ * lucide-style line art, matching the ledger's kind icons). The label stays
+ * the accessible name and the title the hover tooltip, so the bar reads at a
+ * glance without hiding anything from hover or a screen reader. */
+const windowIcon = (paths: string): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+
+/** Expand: arrows pointing to the four corners. */
+const EXPAND_ICON = windowIcon(
+  '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+);
+/** Restore: arrows pointing inward to the edges' midpoints. */
+const RESTORE_ICON = windowIcon(
+  '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
+);
+/** Close: an X. */
+const CLOSE_ICON = windowIcon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>');
+
 function nodeById(path: LearningPath, nodeId: string | null): PathNode | null {
   if (!nodeId) return null;
   for (const module of path.modules) {
@@ -189,32 +207,57 @@ export function mountPathHub(
   body.append(pathPane, architectContainer);
   root.append(body);
 
-  // The detailed view floats over the hub's right half, hanging under the
-  // header: the roadmap and the Architect conversation keep their width, and
-  // the inspector opens on node selection and closes on demand.
+  // The detailed view floats over the hub's right half, pinned to the top
+  // of the learner's viewport: the roadmap and the Architect conversation keep
+  // their width, and the inspector opens on node selection and closes on demand.
+  // The frame itself never scrolls: an inner scroller owns the overflow (so the
+  // title bar can auto-hide out of the way while scrolling down and come back
+  // on the way up). Dragging the bar moves the whole window (vertically and
+  // horizontally) away from its pinned spot; a drag grip on the left edge
+  // resizes it; an Expand toggle stretches it across the whole hub.
+  // One floating window, two tabs: the node details and the workspace ledger
+  // get exactly the same treatment — the window pins under the header, the
+  // drag grip resizes it, Expand stretches either tab across the hub, Close
+  // dismisses it. The ledger is a tab of the window the learner already
+  // works in, never a separate pane stacked underneath the details.
   const inspectorContainer = element(document, "aside", "lp-inspector-pane");
-  inspectorContainer.setAttribute("aria-label", "Node details");
+  inspectorContainer.setAttribute("aria-label", "Node details and workspace");
   inspectorContainer.hidden = true;
+  const inspectorGrip = element(document, "div", "lp-inspector-grip");
+  inspectorGrip.setAttribute("aria-hidden", "true");
+  inspectorGrip.title = "Drag to resize · double-click to reset";
+  const inspectorScroll = element(document, "div", "lp-inspector-scroll");
   const inspectorBar = element(document, "div", "lp-inspector-bar");
-  inspectorBar.append(element(document, "span", "lp-inspector-bar-title", "Node details"));
+  const inspectorTabs = element(document, "div", "lp-inspector-tabs");
+  const tabButton = (pressed: boolean, onClick: () => void): HTMLButtonElement => {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "lp-tab";
+    tab.setAttribute("aria-pressed", pressed ? "true" : "false");
+    tab.addEventListener("click", () => {
+      if (!signal.aborted && !disposed) onClick();
+    });
+    return tab;
+  };
+  const detailsTab = tabButton(true, () => selectInspectorTab("details"));
+  detailsTab.textContent = "Node details";
+  const workspaceTab = tabButton(false, () => selectInspectorTab("workspace"));
+  // renderInspector carries the honest item count in the tab's own label.
+  workspaceTab.textContent = "Workspace ledger";
+  inspectorTabs.append(detailsTab, workspaceTab);
+  const inspectorBarActions = element(document, "span", "lp-inspector-bar-actions");
+  const inspectorExpandHost = element(document, "span", "lp-button-host");
   const inspectorCloseHost = element(document, "span", "lp-button-host");
-  inspectorBar.append(inspectorCloseHost);
-  inspectorContainer.append(inspectorBar);
-  root.append(inspectorContainer);
-
-  // The workspace ledger floats the same way, opened from the inspector's one
-  // Workspace affordance: closable, scrollable, hanging under the header.
-  const workspacePaneContainer = element(document, "aside", "lp-workspace-pane");
-  workspacePaneContainer.setAttribute("aria-label", "Workspace ledger");
-  workspacePaneContainer.hidden = true;
-  const workspaceBar = element(document, "div", "lp-inspector-bar");
-  workspaceBar.append(element(document, "span", "lp-inspector-bar-title", "Workspace ledger"));
-  const workspaceCloseHost = element(document, "span", "lp-button-host");
-  workspaceBar.append(workspaceCloseHost);
-  workspacePaneContainer.append(workspaceBar);
+  inspectorBarActions.append(inspectorExpandHost, inspectorCloseHost);
+  inspectorBar.append(inspectorTabs, inspectorBarActions);
+  inspectorScroll.append(inspectorBar);
+  // Tab contents share the window's scroller; exactly one is visible.
+  const inspectorDetails = element(document, "div", "lp-inspector-content");
   const workspaceBody = element(document, "div", "lp-workspace-body");
-  workspacePaneContainer.append(workspaceBody);
-  root.append(workspacePaneContainer);
+  workspaceBody.hidden = true;
+  inspectorScroll.append(inspectorDetails, workspaceBody);
+  inspectorContainer.append(inspectorGrip, inspectorScroll);
+  root.append(inspectorContainer);
 
   let summaries: PathSummary[] = [];
   let path: LearningPath | null = null;
@@ -222,11 +265,25 @@ export function mountPathHub(
   let workspace: WorkspaceManifest | null = null;
   let selectedPathId: string | null = null;
   let selectedNodeId: string | null = null;
+  /** Window shape the learner controls: Expand stretches the window across
+   * the whole hub, and a dragged width (null = the measured default half)
+   * survives re-renders and background refreshes. */
+  let inspectorExpanded = false;
+  let inspectorWidth: number | null = null;
+  /** The learner dragged the window off its pinned spot (px offsets from the
+   * measured default); null until the first bar drag, and a double-click on
+   * the bar resets it. The offset survives refreshes and re-pinning. */
+  let inspectorOffset: { x: number; y: number } | null = null;
+  /** Last inspector scroll offset and node: scrolling down fades the title bar
+   * out of the way, and switching nodes rewinds to the top with it visible. */
+  let inspectorScrollTop = 0;
+  let lastInspectorNodeId: string | null = null;
   /** The learner closed the detailed view; refreshes keep it closed. */
   let nodeDeselected = false;
-  /** The learner opened the workspace ledger pane; refreshes keep it open,
-   * closing the detailed view or the pane itself is the explicit close. */
-  let workspaceOpen = false;
+  /** Which tab of the floating window is in view. The ledger tab survives
+   * refreshes and node switches (the ledger is for the path, not one node);
+   * a closed window or a new path resets to the details tab. */
+  let inspectorTab: "details" | "workspace" = "details";
   let refineOpen = false;
   /** Path whose Architect conversation was last opened automatically. Background
    * refreshes for the same path never switch away from the conversation in view. */
@@ -247,7 +304,7 @@ export function mountPathHub(
     uploadTarget: () => (path === null ? null : { path, nodeId: selectedNodeId }),
   });
   const launcher = createSessionLauncher(ctx, { host: options.sessionHost });
-  const inspector = createNodeInspector(ctx, inspectorContainer, signal, {
+  const inspector = createNodeInspector(ctx, inspectorDetails, signal, {
     openSession(chatId) {
       if (!signal.aborted && !disposed) ctx.app.openSession(chatId);
     },
@@ -276,10 +333,6 @@ export function mountPathHub(
     discussPivot(pivot, node) {
       return discussPivot(pivot, node);
     },
-    toggleWorkspace() {
-      workspaceOpen = !workspaceOpen;
-      renderWorkspacePane();
-    },
   });
 
   const workspacePane = createWorkspacePane(ctx, workspaceBody, signal, {
@@ -298,6 +351,12 @@ export function mountPathHub(
     readItem(itemId) {
       return readWorkspaceItem(itemId);
     },
+    openDirectory() {
+      if (!signal.aborted && !disposed && path) void openWorkspaceDirectory(path.id);
+    },
+    openItem(itemId) {
+      if (!signal.aborted && !disposed && path) void openWorkspaceItem(path.id, itemId);
+    },
   });
 
   const overview = createPathsOverview(ctx, overviewContainer, signal, {
@@ -305,6 +364,12 @@ export function mountPathHub(
       if (pathId !== selectedPathId) void selectPath(pathId);
     },
     tagsChanged() {
+      void refreshAll();
+    },
+    pathsChanged() {
+      // A deleted path may be the selected one: the ordinary refetch falls
+      // back to the first remaining path (or none), exactly like every
+      // other paths-changed event.
       void refreshAll();
     },
   });
@@ -334,12 +399,10 @@ export function mountPathHub(
     // Closing the detailed view is an explicit learner choice: background
     // refreshes must not silently reselect a node and reopen the window.
     nodeDeselected = nodeId === null;
-    // The pane was opened from the inspector; it closes with the context it
-    // was opened from.
-    if (nodeId === null) workspaceOpen = false;
+    // A closed window resets to the details tab: reopening never surprises.
+    if (nodeId === null) inspectorTab = "details";
     applySelection();
     renderInspector();
-    renderWorkspacePane();
   }
 
   /** Dispose every card badge and the roadmap host. Called on each render and
@@ -444,37 +507,269 @@ export function mountPathHub(
     buildRoadmap();
   }
 
-  /** Hang the floating window directly under the header — never over it —
-   * whatever the header's current wrapped height. The hub root is the
-   * positioned ancestor (see `.lp-hub`), so this is a layout offset, not a
-   * viewport one: the window never covers the host's top bar either. */
-  function positionInspector(): void {
-    inspectorContainer.style.top = `${header.offsetTop + header.offsetHeight + 12}px`;
+  /** Breathing room between the window's top pin and whatever it pins under
+   * (our own header, the host's stuck view header, the viewport edge). */
+  const INSPECTOR_MARGIN = 12;
+
+  /** The host's own view chrome — the header carrying the plugin's name that
+   * stays visible while the view scrolls — is not ours to know by selector,
+   * and it need not be sticky at all: hosts may keep a static header standing
+   * above a scrolling region (LearnHarness's plugin view is one), so the
+   * scrolling itself never moves it. Walk up from our root and take the top
+   * edge of the nearest scrollable ancestor — the header's standing edge in
+   * such hosts, and the viewport top (0) wherever the page itself scrolls.
+   * Hosts without layout (the test DOMs) read as 0. */
+  function scrollViewportTop(): number {
+    const view = document.defaultView;
+    if (!view || typeof view.getComputedStyle !== "function") return 0;
+    let node: Element | null = root;
+    while (node) {
+      let overflowY: string;
+      try {
+        overflowY = view.getComputedStyle(node).overflowY;
+      } catch {
+        return 0;
+      }
+      if ((overflowY === "auto" || overflowY === "scroll") && node.scrollHeight > node.clientHeight) {
+        return node.getBoundingClientRect().top;
+      }
+      node = node.parentElement;
+    }
+    return 0;
   }
+
+  /** The host's *stuck* chrome, for hosts that pin their header over the
+   * scrolling content instead of beside it: walk up from our root and take
+   * the bottom edge of any fixed or stuck element that spans our width along
+   * the viewport's very top row; nothing found reads as 0. */
+  function hostStuckChromeBottom(): number {
+    const view = document.defaultView;
+    if (!view || typeof view.getComputedStyle !== "function") return 0;
+    const rootRect = root.getBoundingClientRect();
+    let bottom = 0;
+    const consider = (candidate: Element): void => {
+      let position: string;
+      try {
+        position = view.getComputedStyle(candidate).position;
+      } catch {
+        return;
+      }
+      if (position !== "fixed" && position !== "sticky") return;
+      const bounds = candidate.getBoundingClientRect();
+      // Only chrome that is actually stuck counts: it hugs the viewport's top
+      // row and spans our width. An unstuck sticky element (still in flow,
+      // mid-page) is skipped, as is chrome beside us — though a root we could
+      // not measure (zero-rect hosts) never excludes a candidate.
+      if (bounds.top > 1 || bounds.bottom <= 0 || bounds.width === 0) return;
+      if (rootRect.width !== 0 && (bounds.right <= rootRect.left || bounds.left >= rootRect.right)) return;
+      if (bounds.bottom > bottom) bottom = bounds.bottom;
+    };
+    let node: Element | null = root;
+    while (node) {
+      consider(node);
+      for (const sibling of node.parentElement?.children ?? []) {
+        if (sibling === node) break;
+        consider(sibling);
+      }
+      node = node.parentElement;
+    }
+    return bottom;
+  }
+
+  /** The viewport-top pin the window never tucks under on a scroll: below
+   * our own header while it is on screen, below the host's standing view
+   * chrome wherever the scroll has moved ours away, and never above the
+   * breathing margin. */
+  function pinnedTopUnderHeaders(): number {
+    return Math.max(
+      INSPECTOR_MARGIN,
+      header.getBoundingClientRect().bottom + INSPECTOR_MARGIN,
+      hostStuckChromeBottom() + INSPECTOR_MARGIN,
+      scrollViewportTop() + INSPECTOR_MARGIN,
+    );
+  }
+
+  /** Pin the floating window to the top of the learner's viewport, not the top
+   * of the page: while the header is on screen the window hangs under it, and
+   * once the view scrolls it stays below the host's standing view chrome (its
+   * header rides above the plugin's scrolling region) instead of jumping to the
+   * viewport top. Left and width come from the hub's measured rect so the
+   * window keeps floating over the hub's right half wherever the view is
+   * scrolled. Expand fills the whole window too — the bottom edge is pinned
+   * while the top edge keeps the same measured pin, so the scroller and the
+   * ledger in it grow to the full height and the window's own bar never tucks
+   * under any header. Zero rects (jsdom, unattached hosts) leave the CSS
+   * fallbacks in charge instead of collapsing the pane. */
+  function positionInspector(): void {
+    const view = document.defaultView;
+    if (!view) return;
+    // Expanded covers everything: the class pins the bottom edge, and the top
+    // edge keeps the same measured pin — a dragged offset stands down.
+    if (inspectorExpanded) {
+      inspectorContainer.style.top = `${pinnedTopUnderHeaders()}px`;
+      const hubRect = root.getBoundingClientRect();
+      if (hubRect.width === 0) return;
+      inspectorContainer.style.width = `${hubRect.width}px`;
+      inspectorContainer.style.left = `${hubRect.right - hubRect.width}px`;
+      return;
+    }
+    const pinnedTop = pinnedTopUnderHeaders();
+    inspectorContainer.style.top = `${pinnedTop + (inspectorOffset?.y ?? 0)}px`;
+    const hubRect = root.getBoundingClientRect();
+    if (hubRect.width === 0) return;
+    const width = Math.max(Math.min(inspectorWidth ?? hubRect.width / 2 - 10, hubRect.width), 0);
+    inspectorContainer.style.width = `${width}px`;
+    inspectorContainer.style.left = `${hubRect.right - width + (inspectorOffset?.x ?? 0)}px`;
+  }
+
+  function toggleInspectorExpanded(next: boolean): void {
+    inspectorExpanded = next;
+    inspectorContainer.classList.toggle("lp-inspector-expanded", next);
+    inspectorExpandButton.update(
+      next
+        ? { label: "Restore", title: "Return the window to its half-pane width", icon: RESTORE_ICON }
+        : { label: "Expand", title: "Stretch the window across the hub", icon: EXPAND_ICON },
+    );
+    positionInspector();
+  }
+
+  // The title bar rides at the top of the details, but it must not squat over
+  // the content: scrolling down fades it out of the way, and scrolling up (or
+  // reaching the top) brings the title and its controls back within reach.
+  inspectorScroll.addEventListener(
+    "scroll",
+    () => {
+      if (disposed || signal.aborted) return;
+      const top = inspectorScroll.scrollTop;
+      const hide = top > 24 && top > inspectorScrollTop;
+      inspectorScrollTop = top;
+      inspectorBar.classList.toggle("lp-inspector-bar-hidden", hide);
+    },
+    { passive: true },
+  );
+
+  // Drag the bar to move the window — vertically and horizontally — off its
+  // pinned spot: the dragged offset survives refreshes and rides along with
+  // the ordinary re-pinning, the window never leaves the viewport and never
+  // tucks under a header (its top stays at or below the header pin, and at
+  // least a bar's worth stays on screen), and a double-click on the bar puts
+  // it back where it pins by default. Presses on the bar's own controls (tabs,
+  // Expand, Close, the grip) never become a move.
+  inspectorBar.addEventListener("pointerdown", (event: PointerEvent) => {
+    if (signal.aborted || disposed || inspectorExpanded) return;
+    const pressed = event.target as HTMLElement | null;
+    if (pressed?.closest(".lp-tab, .lp-button-host, .lp-inspector-grip")) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    try {
+      inspectorBar.setPointerCapture(event.pointerId);
+    } catch {
+      // Hosts without pointer capture still get the listener-based drag.
+    }
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startOffset = inspectorOffset ?? { x: 0, y: 0 };
+    const onMove = (move: PointerEvent): void => {
+      if (move.pointerId !== event.pointerId) return;
+      const view = document.defaultView;
+      const height = view?.innerHeight ?? 0;
+      const pinnedTop = pinnedTopUnderHeaders();
+      // The header pin is the drag floor: the window may move anywhere below
+      // it, but never tuck under a header on the way up.
+      const minY = 0;
+      const maxY = height > 0 ? Math.max(height - 96 - pinnedTop, minY) : Number.MAX_SAFE_INTEGER;
+      inspectorOffset = {
+        x: startOffset.x + (move.clientX - startX),
+        y: Math.max(Math.min(startOffset.y + (move.clientY - startY), maxY), minY),
+      };
+      positionInspector();
+    };
+    const onEnd = (end: PointerEvent): void => {
+      if (end.pointerId !== event.pointerId) return;
+      inspectorBar.removeEventListener("pointermove", onMove);
+      inspectorBar.removeEventListener("pointerup", onEnd);
+      inspectorBar.removeEventListener("pointercancel", onEnd);
+    };
+    inspectorBar.addEventListener("pointermove", onMove);
+    inspectorBar.addEventListener("pointerup", onEnd);
+    inspectorBar.addEventListener("pointercancel", onEnd);
+  });
+  inspectorBar.addEventListener("dblclick", (event) => {
+    if (signal.aborted || disposed) return;
+    const pressed = event.target as HTMLElement | null;
+    if (pressed?.closest(".lp-tab, .lp-button-host, .lp-inspector-grip")) return;
+    inspectorOffset = null;
+    positionInspector();
+  });
+
+  // Drag the left grip to widen or narrow the window; the window stays
+  // anchored to the hub's right edge. Double-click resets to the default.
+  // Expanded mode covers the whole hub already, so there is nothing to drag.
+  inspectorGrip.addEventListener("pointerdown", (event) => {
+    if (signal.aborted || disposed || inspectorExpanded) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    inspectorGrip.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = inspectorContainer.getBoundingClientRect().width;
+    const onMove = (move: PointerEvent): void => {
+      if (move.pointerId !== event.pointerId) return;
+      const hubRect = root.getBoundingClientRect();
+      inspectorWidth = Math.max(280, Math.min(startWidth + (startX - move.clientX), hubRect.width));
+      positionInspector();
+    };
+    const onEnd = (end: PointerEvent): void => {
+      if (end.pointerId !== event.pointerId) return;
+      inspectorGrip.removeEventListener("pointermove", onMove);
+      inspectorGrip.removeEventListener("pointerup", onEnd);
+      inspectorGrip.removeEventListener("pointercancel", onEnd);
+    };
+    inspectorGrip.addEventListener("pointermove", onMove);
+    inspectorGrip.addEventListener("pointerup", onEnd);
+    inspectorGrip.addEventListener("pointercancel", onEnd);
+  });
+  inspectorGrip.addEventListener("dblclick", () => {
+    if (signal.aborted || disposed) return;
+    inspectorWidth = null;
+    positionInspector();
+  });
 
   function renderInspector(): void {
     if (disposed || signal.aborted) return;
     const node = path ? nodeById(path, selectedNodeId) : null;
     inspectorContainer.hidden = node === null;
+    // A different node is fresh content: rewind to the top with the bar back
+    // in place. Background refreshes of the same node keep the learner's
+    // scroll position and the bar in whatever state the scrolling left it.
+    if (node?.id !== lastInspectorNodeId) {
+      lastInspectorNodeId = node?.id ?? null;
+      inspectorScrollTop = 0;
+      inspectorScroll.scrollTop = 0;
+      inspectorBar.classList.remove("lp-inspector-bar-hidden");
+    }
     if (node !== null) positionInspector();
-    inspector.render(path, node, workspace);
+    // One window, two tabs: the label carries the honest item count (no
+    // unread or new state anywhere), and exactly one content div shows.
+    const itemCount = workspace?.items.length ?? 0;
+    workspaceTab.textContent =
+      itemCount === 0 ? "Workspace ledger" : `Workspace ledger (${itemCount} item${itemCount === 1 ? "" : "s"})`;
+    const showWorkspace = inspectorTab === "workspace";
+    detailsTab.setAttribute("aria-pressed", showWorkspace ? "false" : "true");
+    workspaceTab.setAttribute("aria-pressed", showWorkspace ? "true" : "false");
+    inspectorDetails.hidden = showWorkspace;
+    workspaceBody.hidden = !showWorkspace;
+    inspector.render(path, node);
+    // The ledger renders with the window open regardless of the active tab:
+    // switching tabs is instant, with no refetch on the way in.
+    workspacePane.render(path, node, workspace);
   }
 
-  /** Hang the ledger pane under the header like the detailed view, floating
-   * over the hub's right half; the pane stays open across background refreshes
-   * and closes only when the learner closes it (or the detailed view). */
-  function positionWorkspacePane(): void {
-    workspacePaneContainer.style.top = `${header.offsetTop + header.offsetHeight + 12}px`;
-  }
-
-  function renderWorkspacePane(): void {
+  /** Tab switch: the ledger keeps its place across refreshes and node
+   * switches; only a closed window or a new path resets to the details. */
+  function selectInspectorTab(next: "details" | "workspace"): void {
     if (disposed || signal.aborted) return;
-    const show = workspaceOpen && path !== null;
-    workspacePaneContainer.hidden = !show;
-    // A closed pane mounts nothing; opening renders fresh from the manifest.
-    if (!show) return;
-    positionWorkspacePane();
-    workspacePane.render(path, path ? nodeById(path, selectedNodeId) : null, workspace);
+    inspectorTab = next;
+    renderInspector();
   }
 
   function renderHeader(): void {
@@ -525,7 +820,6 @@ export function mountPathHub(
     overview.render(summaries, selectedPathId);
     renderPathView();
     renderInspector();
-    renderWorkspacePane();
   }
 
   function ensureSelection(): void {
@@ -538,11 +832,13 @@ export function mountPathHub(
   }
 
   /** The workspace is a refetch-on-change surface like the path itself: the
-   * notification is a hint, the manifest read here is authoritative. */
+   * notification is a hint, the manifest read here is authoritative. The
+   * read is `workspace.resync`, so external edits to the files (the truth)
+   * land in the ledger the moment the hub looks. */
   async function refreshWorkspace(token: number, pathId: string): Promise<void> {
     if (disposed || signal.aborted) return;
     try {
-      const result = await ctx.call<{ workspace: WorkspaceManifest | null }>("workspace.list", {
+      const result = await ctx.call<{ workspace: WorkspaceManifest | null }>("workspace.resync", {
         pathId,
       });
       if (!live(token)) return;
@@ -631,8 +927,9 @@ export function mountPathHub(
     selectedPathId = pathId;
     selectedNodeId = null;
     nodeDeselected = false;
-    // A new path is a new ledger: the pane reopens from the new path's inspector.
-    workspaceOpen = false;
+    // A new path is a new window: it opens on the details tab, and the new
+    // path's ledger is one tab click away.
+    inspectorTab = "details";
     await refreshAll();
     // An explicit path selection takes precedence over an unsent new-path draft.
     if (path?.id === pathId && path.architectChatId && pane.isNewDraft()) {
@@ -858,6 +1155,45 @@ export function mountPathHub(
     return result.content ?? null;
   }
 
+  /** Reveal the selected path's workspace folder in the host OS file manager
+   * (workspace.openDirectory). A failure surfaces in the hub's error line; a
+   * success opens the folder and changes nothing. */
+  async function openWorkspaceDirectory(pathId: string): Promise<void> {
+    if (disposed || signal.aborted) return;
+    try {
+      await ctx.call("workspace.openDirectory", { pathId });
+      if (disposed || signal.aborted) return;
+      showError(null);
+    } catch (problem) {
+      if (disposed || signal.aborted) return;
+      showError(
+        `Could not open the workspace folder: ${
+          problem instanceof Error ? problem.message : String(problem)
+        }`,
+      );
+    }
+  }
+
+  /** Hand one item's content file to the OS (workspace.openItem): the system
+   * opens the learner's chosen application, prompting for one wherever no
+   * default is registered. A failure surfaces in the hub's error line; a
+   * success changes nothing in the store. */
+  async function openWorkspaceItem(pathId: string, itemId: string): Promise<void> {
+    if (disposed || signal.aborted) return;
+    try {
+      await ctx.call("workspace.openItem", { pathId, itemId });
+      if (disposed || signal.aborted) return;
+      showError(null);
+    } catch (problem) {
+      if (disposed || signal.aborted) return;
+      showError(
+        `Could not open the item in an editor: ${
+          problem instanceof Error ? problem.message : String(problem)
+        }`,
+      );
+    }
+  }
+
   async function deleteWorkspaceItem(itemId: string): Promise<void> {
     if (disposed || signal.aborted || !path) return;
     try {
@@ -964,12 +1300,33 @@ export function mountPathHub(
   );
   handles.push(exportButton);
 
+  const inspectorExpandButton = ctx.ui.mountButton(
+    inspectorExpandHost,
+    {
+      label: "Expand",
+      title: "Stretch the window across the hub",
+      variant: "outline",
+      size: "icon-xs",
+      icon: EXPAND_ICON,
+      iconOnly: true,
+      onClick: () => {
+        if (signal.aborted || disposed) return;
+        toggleInspectorExpanded(!inspectorExpanded);
+      },
+    },
+    { signal },
+  );
+  handles.push(inspectorExpandButton);
+
   const inspectorCloseButton = ctx.ui.mountButton(
     inspectorCloseHost,
     {
       label: "Close",
+      title: "Close",
       variant: "outline",
-      size: "xs",
+      size: "icon-xs",
+      icon: CLOSE_ICON,
+      iconOnly: true,
       onClick: () => {
         if (signal.aborted || disposed) return;
         selectNode(null);
@@ -978,22 +1335,6 @@ export function mountPathHub(
     { signal },
   );
   handles.push(inspectorCloseButton);
-
-  const workspaceCloseButton = ctx.ui.mountButton(
-    workspaceCloseHost,
-    {
-      label: "Close",
-      variant: "outline",
-      size: "sm",
-      onClick: () => {
-        if (signal.aborted || disposed) return;
-        workspaceOpen = false;
-        renderWorkspacePane();
-      },
-    },
-    { signal },
-  );
-  handles.push(workspaceCloseButton);
 
   pathSelect.addEventListener("change", () => {
     if (signal.aborted || disposed) return;
@@ -1043,13 +1384,17 @@ export function mountPathHub(
   });
 
   // A host resize can rewrap the header (its height changes with the goal
-  // text), so the floating window re-hangs under it instead of drifting over.
-  const onViewResize = (): void => {
+  // text), and scrolling the page moves the hub past the viewport top, so the
+  // floating window re-pins instead of drifting out of view. Scroll events do
+  // not bubble, but the capture listener still sees them from any host
+  // scroll container. The workspace pane needs no pinning: it is a grid
+  // column, and the page scrolls it like every other pane.
+  const onViewChange = (): void => {
     if (!disposed && !signal.aborted && !inspectorContainer.hidden) positionInspector();
-    if (!disposed && !signal.aborted && !workspacePaneContainer.hidden) positionWorkspacePane();
   };
   const defaultView = document.defaultView;
-  if (defaultView) defaultView.addEventListener("resize", onViewResize);
+  if (defaultView) defaultView.addEventListener("resize", onViewChange);
+  document.addEventListener("scroll", onViewChange, { capture: true, passive: true });
 
   const onAbort = (): void => {
     if (disposed) return;
@@ -1058,7 +1403,8 @@ export function mountPathHub(
     offNotification();
     offNavigation();
     offResync();
-    if (defaultView) defaultView.removeEventListener("resize", onViewResize);
+    if (defaultView) defaultView.removeEventListener("resize", onViewChange);
+    document.removeEventListener("scroll", onViewChange, { capture: true });
     for (const handle of handles.reverse()) handle.dispose();
     handles.length = 0;
     disposeCards();

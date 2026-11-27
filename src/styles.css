@@ -8,8 +8,7 @@
 }
 
 .lp-hub {
-  position: relative; /* the floating inspector hangs under the header, anchored here */
-  display: flex;
+  display: flex; /* the floating inspector is viewport-fixed, not anchored here */
   flex-direction: column;
   gap: 20px;
   min-width: 0;
@@ -131,18 +130,23 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
-/* The detailed view floats over the hub's right half, hanging directly under
- * the header (the top offset is set from the measured header height): it never
- * covers the header or the host's top bar, never takes the full window height,
- * and casts its own shadow over the roadmap it overlays. */
+/* The detailed view floats over the hub's right half, pinned to the top of
+ * the learner's viewport (top, left and width are set from measured rects,
+ * so it hangs under the header while that is on screen and sits flush at the
+ * viewport top once scrolled past): it never takes the full window height,
+ * and casts its own shadow over the roadmap it overlays. The declared top
+ * and right are only fallbacks until the first measurement lands. The frame
+ * itself never scrolls — an inner scroller owns the overflow — so the drag
+ * grip can hug the frame's left edge without scrolling with the content. */
 .lp-inspector-pane {
-  position: absolute;
+  position: fixed;
+  top: 12px;
   right: 0;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   width: calc(50% - 10px);
   max-height: min(72vh, 44rem);
-  overflow-y: auto;
-  padding: clamp(10px, 1.5vw, 16px);
   border: 1px solid var(--border, #e4e4e7);
   border-radius: 10px;
   background: var(--card, var(--background));
@@ -150,8 +154,70 @@
   z-index: 40;
 }
 
+/* Expanded: the window fills the viewport below the headers — the bottom edge
+ * is pinned by this class while JavaScript keeps the top edge on the same
+ * measured pin the floating window uses (below our own header while it is
+ * on screen, below the host's standing view chrome wherever the view
+ * scrolls), so the scroller (and the ledger tree inside it) stretches to
+ * the full height and the window's bar never tucks under any header. The
+ * grip disappears (there is nothing left to drag — Restore brings the
+ * previous width back); `top` here is the zero-rect fallback (jsdom,
+ * unattached hosts). */
+.lp-inspector-pane.lp-inspector-expanded {
+  top: 12px;
+  bottom: 12px;
+  max-height: none;
+}
+
+.lp-inspector-pane.lp-inspector-expanded .lp-inspector-grip {
+  display: none;
+}
+
 .lp-inspector-pane[hidden] {
   display: none;
+}
+
+/* The scroller is the frame's one flex child: it fills whatever height the
+ * frame has (content-sized while floating, viewport-pinned when expanded) and
+ * inherits the frame's height cap so the overflow stays inside, under the
+ * sticky title bar. */
+.lp-inspector-scroll {
+  box-sizing: border-box;
+  flex: 1;
+  min-height: 0;
+  max-height: inherit;
+  overflow-y: auto;
+  padding: clamp(10px, 1.5vw, 16px);
+}
+
+/* Drag grip on the window's left edge (right edge is anchored to the hub):
+ * a slim visible pill on hover/active, half inside the frame border. */
+.lp-inspector-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -6px;
+  width: 14px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 3;
+}
+
+.lp-inspector-grip::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  width: 3px;
+  height: 44px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  background: var(--border, #e4e4e7);
+}
+
+.lp-inspector-grip:hover::after,
+.lp-inspector-grip:active::after {
+  background: var(--muted-foreground, #a1a1aa);
 }
 
 .lp-inspector-bar {
@@ -165,59 +231,159 @@
   padding: 0 0 6px;
   background: var(--card, var(--background));
   z-index: 1;
+  max-height: 4rem;
+  transition: max-height 160ms ease, padding 160ms ease, opacity 160ms ease;
+  /* The bar's empty space is the window's move handle (its tabs, buttons
+     and grip keep their own cursors); touch drags move the window, never
+     the page behind it. */
+  cursor: grab;
+  touch-action: none;
 }
 
-/* The workspace ledger pane floats the same way as the detailed view: it
- * hangs under the header (top offset set from the measured header height),
- * never takes the full window height, and scrolls its own body. */
-.lp-workspace-pane {
-  position: absolute;
-  right: 0;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  width: calc(50% - 10px);
-  max-height: min(72vh, 44rem);
-  padding: clamp(10px, 1.5vw, 16px);
-  border: 1px solid var(--border, #e4e4e7);
-  border-radius: 10px;
-  background: var(--card, var(--background));
-  box-shadow: 0 24px 48px rgb(0 0 0 / 28%), 0 6px 16px rgb(0 0 0 / 14%);
-  z-index: 45;
+.lp-inspector-bar:active {
+  cursor: grabbing;
 }
 
-.lp-workspace-pane[hidden] {
-  display: none;
+/* The bar's left side is a tab row: Node details and the workspace ledger
+ * are two views of one floating window. Tabs are plain DOM buttons — the
+ * bar sits inside a repositioned floating window, where host widgets have
+ * historically miscalculated hit targets. */
+.lp-inspector-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  min-width: 0;
 }
 
+.lp-tab {
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px 6px 0 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  color: var(--muted-foreground, var(--foreground));
+  background: transparent;
+  white-space: nowrap;
+}
+
+.lp-tab:focus-visible {
+  outline: 2px solid var(--ring, #6366f1);
+  outline-offset: 1px;
+}
+
+.lp-tab[aria-pressed="true"] {
+  color: var(--foreground);
+  border-bottom-color: var(--primary, #6366f1);
+}
+
+.lp-inspector-bar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+/* Hidden while scrolling down: the bar collapses out of the way instead of
+ * squatting over the details; scrolling up brings it back. */
+.lp-inspector-bar.lp-inspector-bar-hidden {
+  max-height: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The workspace ledger is the second tab of the floating details window: it
+ * shares the window's scroller, so it never floats on its own and never
+ * stacks underneath anything — exactly the treatment the details get. */
 .lp-workspace-body {
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow-y: auto;
+}
+
+.lp-workspace-body[hidden] {
+  display: none;
 }
 
 /* A dropped document is filing material: the armed state reads as "you can let
-   go here", not as an inbox or a dropzone decoration. */
-.lp-workspace-body.lp-drop-target {
-  outline: 2px dashed var(--primary, #6366f1);
-  outline-offset: -2px;
+   go here", not as an inbox or a dropzone decoration. Only the filing strip
+   below arms (and takes the drop); the pane's list, the viewer and the path
+   surfaces behind the floating pane never do. */
+.lp-workspace-dropzone {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border, #d4d4d8);
   border-radius: 8px;
+  /* The harness's own white — the copy and the glyph read in the same tone
+     as the surrounding text and the kind icons, not as muted chrome. The
+     armed state below repaints the whole strip in the primary. */
+  color: var(--foreground);
+}
+
+/* The "select from computer" picker owns the strip's right end; the glyph and
+   the copy fill the left. */
+.lp-workspace-dropzone .lp-button-host {
+  margin-left: auto;
+}
+
+.lp-workspace-dropzone-icon {
+  display: inline-flex;
+}
+
+.lp-workspace-dropzone-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lp-workspace-dropzone-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.lp-workspace-dropzone.lp-drop-target {
+  border-color: var(--primary, #6366f1);
+  border-style: solid;
+  color: var(--primary, #6366f1);
+  background: color-mix(in srgb, var(--primary, #6366f1) 6%, transparent);
+}
+
+/* Item kinds read as icons; the hover tooltip (title) carries the word. */
+.lp-kind-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  /* The harness's own white — the same tone the surrounding text reads in,
+     so a kind reads as part of the ledger, not as muted chrome. */
+  color: var(--foreground);
+  cursor: default;
+}
+
+.lp-kind-icon svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .lp-workspace-source-status {
   margin: 0;
-}
-
-/* The inspector's one calm affordance for the ledger: room to breathe, one
- * hint line, no inline list. */
-.lp-workspace-open {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 6px 0 2px;
 }
 
 .lp-workspace-header {
@@ -228,35 +394,12 @@
   gap: 6px 8px;
 }
 
+/* The ledger tree's host: the host tree owns rows, columns, keyboard
+ * navigation and virtualization; the pane only supplies controlled rows. */
 .lp-workspace-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
-}
-
-.lp-workspace-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 10px;
-  padding: 10px 2px;
-  border-top: 1px solid var(--border, #e4e4e7);
-}
-
-.lp-workspace-row:first-child {
-  border-top: none;
-}
-
-.lp-workspace-row-title {
   min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.lp-workspace-links {
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .lp-workspace-row-actions {
@@ -264,47 +407,20 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
 }
 
-/* The read-only viewer: the pane body scrolls; content renders verbatim. */
-.lp-workspace-viewer {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.lp-workspace-viewer-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 10px;
-}
-
-.lp-workspace-viewer-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 10px;
+/* The expanded row preview: the note body renders read-only in place, under
+ * its row, and the pane column scrolls with the page — no inner scroll cap. */
+.lp-workspace-preview {
   min-width: 0;
-}
-
-.lp-workspace-item-title {
-  margin: 0;
-  font-weight: 650;
   overflow-wrap: anywhere;
 }
 
-.lp-workspace-viewer-content {
-  min-height: 0;
-  overflow-wrap: anywhere;
-}
-
-.lp-workspace-viewer-markdown p:first-child {
+.lp-workspace-preview p:first-child {
   margin-top: 0;
 }
 
-.lp-workspace-viewer-markdown p:last-child {
+.lp-workspace-preview p:last-child {
   margin-bottom: 0;
 }
 
@@ -346,9 +462,16 @@
   font-family: var(--mono, ui-monospace, monospace);
 }
 
-.lp-inspector-bar-title {
-  font-size: 0.9rem;
-  font-weight: 650;
+/* The details tab's content div: one of the window's two tab contents. */
+.lp-inspector-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.lp-inspector-content[hidden] {
+  display: none;
 }
 
 .lp-path-pane,
@@ -410,6 +533,107 @@
 .lp-button-host {
   display: inline-flex;
   align-items: center;
+}
+
+/* Native DOM buttons inside the workspace pane (host widgets break when the
+ * pane toggles into fullscreen fixed positioning, so these use plain CSS). */
+.lp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  color: var(--foreground);
+  background: var(--background);
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  white-space: nowrap;
+}
+
+.lp-btn:focus-visible {
+  outline: 2px solid var(--ring, #6366f1);
+  outline-offset: 2px;
+}
+
+.lp-btn-default {
+  background: var(--primary, #6366f1);
+  border-color: var(--primary, #6366f1);
+  color: #fff;
+}
+
+.lp-btn-default:hover {
+  background: color-mix(in srgb, var(--primary, #6366f1) 90%, #000);
+}
+
+.lp-btn-outline {
+  border-color: var(--border, #d4d4d8);
+  background: transparent;
+}
+
+.lp-btn-outline:hover {
+  background: var(--muted, rgba(127, 127, 127, 0.08));
+  border-color: var(--muted-foreground, #a1a1aa);
+}
+
+.lp-btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted-foreground, #71717a);
+}
+
+.lp-btn-ghost:hover {
+  background: var(--muted, rgba(127, 127, 127, 0.08));
+  color: var(--foreground);
+}
+
+.lp-btn-link {
+  border-color: transparent;
+  background: transparent;
+  padding: 2px 0;
+  color: var(--primary, #6366f1);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.lp-btn-link:hover {
+  text-decoration-thickness: 2px;
+}
+
+.lp-btn-secondary {
+  background: var(--muted, rgba(127, 127, 127, 0.12));
+  border-color: var(--border, #e4e4e7);
+}
+
+.lp-btn-sm {
+  padding: 4px 10px;
+  font-size: 0.7rem;
+}
+
+/* Icon-only native buttons: the label lives on aria-label and the hover
+ * title; the glyph is lucide-style line art in the button's own color. */
+.lp-btn-icon {
+  padding: 4px 7px;
+}
+
+.lp-btn-icon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lp-btn-xs {
+  padding: 2px 6px;
+  font-size: 0.7rem;
 }
 
 /* Node cards: the roadmap lanes' one card pattern -------------------------- */
@@ -625,6 +849,18 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* Filing lives at the card's foot: the tag glyph hugs the bottom edge,
+   beside whatever filing the card already shows. */
+.lp-path-card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 8px;
+  margin-top: auto;
+  padding-top: 2px;
 }
 
 .lp-distribution {
