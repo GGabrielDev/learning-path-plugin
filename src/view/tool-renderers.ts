@@ -74,6 +74,22 @@ function summary(tool: PluginToolRenderProps): { headline: string; detail?: stri
         detail: "Pending; the path was not changed. The learner decides.",
       };
     }
+    case "learning_path_save_artifact": {
+      const title = text(output.itemTitle) ?? text(output.title) ?? "produced artifact";
+      const characters = number(output.characterCount);
+      return {
+        headline: `Saved artifact: ${title}`,
+        detail: characters > 0 ? `${characters} characters · linked to ${nodeTitle}` : `Linked to ${nodeTitle}`,
+      };
+    }
+    case "learning_path_read_workspace_item": {
+      const title = text(output.title) ?? "workspace item";
+      const total = number(output.totalCharacters);
+      return {
+        headline: `Read workspace item: ${title}`,
+        detail: total > 0 ? `${output.chunkStart ?? 0}–${output.chunkEnd ?? 0} of ${total} characters` : undefined,
+      };
+    }
     default:
       return { headline: tool.toolName };
   }
@@ -123,6 +139,8 @@ function rendererFor(toolName: string): PluginToolRenderer {
           "learning_path_update_progress": "Recording node progress",
           "learning_path_log_error": "Logging a cognitive error",
           "learning_path_suggest_pivot": "Recording an advisory pivot",
+          "learning_path_read_workspace_item": "Reading learner workspace material",
+          "learning_path_save_artifact": "Saving the produced artifact",
         }[toolName] ?? toolName;
         const pending = toolName === GRAPH_SEARCH_TOOL_NAME
           ? (tool.state === "output-error" ? "The graph search could not complete." : "Preparing…")

@@ -155,6 +155,15 @@ export function mountSettingsPage(
   const graphHost = element(document, "div", "lp-settings-rows");
   graphSection.append(graphHost);
 
+  const mapSection = section(
+    document,
+    root,
+    "Learner-first map revisiting (experimental)",
+    "Off by default. For relational-map teaching sessions, the learner makes the current map first and may optionally supply an earlier map for review afterward.",
+  );
+  const mapHost = element(document, "div", "lp-settings-rows");
+  mapSection.append(mapHost);
+
   const chatSection = section(
     document,
     root,
@@ -163,7 +172,6 @@ export function mountSettingsPage(
   );
   const chatHost = element(document, "div", "lp-settings-rows");
   chatSection.append(chatHost);
-
   const architectSection = section(
     document,
     root,
@@ -189,8 +197,8 @@ export function mountSettingsPage(
   let artifactRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
   let graphRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
   let chatRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
-  let graphSaving = false;
-  let chatSaving = false;
+  let mapRows: PluginWidgetHandle<PluginSettingsSchema> | null = null;
+  let experimentalSettingsSaving = false;
   let architectHandles: PluginWidgetHandle<unknown>[] = [];
   let pathHandles: PluginWidgetHandle<unknown>[] = [];
   const dialogs: PluginWidgetHandle<PluginDialogProps>[] = [];
@@ -267,21 +275,26 @@ export function mountSettingsPage(
       label: "Use graph context for teaching and practice",
       description: "Choose better questions from prior knowledge; reveal connections only after the learner's attempt. No graph content appears in the path UI.",
       value: settings.graphContextEnabled === true,
-      disabled: graphSaving,
-      onChange: async (value: boolean) => {
-        if (graphSaving) return;
-        graphSaving = true;
-        renderGraphRows();
-        try {
-          await saveSettings({ ...settings, graphContextEnabled: value });
-        } finally {
-          graphSaving = false;
-          renderGraphRows();
-        }
-      },
+      disabled: experimentalSettingsSaving,
+      onChange: (value: boolean) => saveExperimentalSetting("graphContextEnabled", value),
     }];
     if (graphRows) graphRows.update({ rows });
     else graphRows = ctx.ui.mountSettingsRows(graphHost, { rows }, { signal });
+  }
+
+  function renderMapRows(): void {
+    if (disposed || signal.aborted) return;
+    const rows: PluginSettingsRow[] = [{
+      key: "map-revisit-enabled",
+      type: "toggle",
+      label: "Offer learner-first earlier-map revisits",
+      description: "Only linked Teacher sessions with relational-map artifacts; decline or missing maps continue normally.",
+      value: settings.mapRevisitEnabled === true,
+      disabled: experimentalSettingsSaving,
+      onChange: (value: boolean) => saveExperimentalSetting("mapRevisitEnabled", value),
+    }];
+    if (mapRows) mapRows.update({ rows });
+    else mapRows = ctx.ui.mountSettingsRows(mapHost, { rows }, { signal });
   }
 
   function renderChatRows(): void {
@@ -292,21 +305,32 @@ export function mountSettingsPage(
       label: "Enable Teaching-chat path creation",
       description: "Allow the session top-bar action to create an unsent Architect draft from a saved Teaching chat.",
       value: settings.chatToPathEnabled === true,
-      disabled: chatSaving,
-      onChange: async (value: boolean) => {
-        if (chatSaving) return;
-        chatSaving = true;
-        renderChatRows();
-        try {
-          await saveSettings({ ...settings, chatToPathEnabled: value });
-        } finally {
-          chatSaving = false;
-          renderChatRows();
-        }
-      },
+      disabled: experimentalSettingsSaving,
+      onChange: (value: boolean) => saveExperimentalSetting("chatToPathEnabled", value),
     }];
     if (chatRows) chatRows.update({ rows });
     else chatRows = ctx.ui.mountSettingsRows(chatHost, { rows }, { signal });
+  }
+
+  function renderExperimentalRows(): void {
+    renderGraphRows();
+    renderMapRows();
+    renderChatRows();
+  }
+
+  async function saveExperimentalSetting(
+    key: "graphContextEnabled" | "mapRevisitEnabled" | "chatToPathEnabled",
+    value: boolean,
+  ): Promise<void> {
+    if (experimentalSettingsSaving) return;
+    experimentalSettingsSaving = true;
+    renderExperimentalRows();
+    try {
+      await saveSettings({ ...settings, [key]: value });
+    } finally {
+      experimentalSettingsSaving = false;
+      renderExperimentalRows();
+    }
   }
 
   function preferences(): ArchitectPreferences {
@@ -640,13 +664,11 @@ export function mountSettingsPage(
       if (disposed || signal.aborted) return false;
       setStatus(`Could not save settings: ${errorMessage(problem)}`, "error");
       renderArtifactRows();
-      renderGraphRows();
-      renderChatRows();
+      renderExperimentalRows();
       renderArchitect();
       return false;
     }
   }
-
   function showSaved(saved: PluginSettings, modelPending = false): void {
     settings = saved;
     setStatus(
@@ -655,8 +677,7 @@ export function mountSettingsPage(
         : "Settings saved.",
     );
     renderArtifactRows();
-    renderGraphRows();
-    renderChatRows();
+    renderExperimentalRows();
     renderArchitect();
   }
 
@@ -673,8 +694,7 @@ export function mountSettingsPage(
       overrideDraft = null;
       summaries = [...(pathsResult.paths ?? [])];
       renderArtifactRows();
-      renderGraphRows();
-      renderChatRows();
+      renderExperimentalRows();
       renderArchitect();
       renderPaths();
       setStatus(null);
@@ -711,6 +731,8 @@ export function mountSettingsPage(
     chatRows = null;
     graphRows?.dispose();
     graphRows = null;
+    mapRows?.dispose();
+    mapRows = null;
     root.remove();
   };
 }

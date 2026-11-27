@@ -596,6 +596,12 @@ test("paths.list summarizes stored paths without loading tool state", async (t) 
       moduleCount: 2,
       nodeCount: 6,
       sourceMode: "canonical",
+      sourceTitles: ["OSTEP"],
+      nodeStates: { unstarted: 3, in_progress: 2, consolidated: 1 },
+      pendingPivotCount: 1,
+      unresolvedErrorCount: 1,
+      tags: [],
+      folder: null,
       architectChatId: "conversation-1",
     },
   ]);
@@ -661,6 +667,121 @@ test("paths.updateNode records progression and per-node artifacts without rewrit
   );
 });
 
+test("paths.updateMeta stores learner grouping tags without touching the curriculum", async (t) => {
+  const h = host(t);
+  await createConversation(h);
+  await h.runTool("save_learning_path", rawPath());
+
+  const tagged = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: ["exam:step-2", "field:systems"],
+  });
+  assert.deepEqual(tagged.path.tags, ["exam:step-2", "field:systems"]);
+  assert.equal(tagged.path.architectChatId, "conversation-1");
+  assert.equal(tagged.path.createdAt, AT, "filing a path does not rewrite its identity");
+  assert.deepEqual(
+    tagged.path.modules[0].nodes[1].childSessions[0].chatId,
+    "chat-1",
+    "the curriculum is untouched by metadata",
+  );
+  assert.ok(
+    h.events.some((event) => event.topic === "paths-changed" && (event.data as any).id === "path-linear-algebra"),
+  );
+
+  const listed = await h.call<{ paths: any[] }>("paths.list");
+  assert.deepEqual(listed.paths[0].tags, ["exam:step-2", "field:systems"]);
+
+  const cleared = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: [],
+  });
+  assert.equal(cleared.path.tags, undefined, "clearing tags drops the key entirely");
+
+  const reloaded = await h.call<{ path: any }>("paths.get", { id: "path-linear-algebra" });
+  assert.equal(reloaded.path.tags, undefined, "the store round-trips the cleared record");
+
+  await assert.rejects(h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: "exam" }), /tags must be an array/);
+  await assert.rejects(h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [""] }), /must be at least 1 character/);
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: ["x".repeat(41)] }),
+    /must be at most 40 characters/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: ["field:systems", "Field:Systems"] }),
+    /duplicate tag/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] }),
+    /at most 8 entries/,
+  );
+  await assert.rejects(h.call("paths.updateMeta", { pathId: "path-missing", tags: [] }), /Unknown path/);
+});
+
+test("paths.updateMeta files a path into one folder hierarchy and clears it on empty", async (t) => {
+  const h = host(t);
+  await createConversation(h);
+  await h.runTool("save_learning_path", rawPath());
+
+  const filed = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: [],
+    folder: "exam/step-2",
+  });
+  assert.equal(filed.path.folder, "exam/step-2");
+  assert.equal(filed.path.createdAt, AT, "filing does not rewrite path identity");
+
+  const listed = await h.call<{ paths: any[] }>("paths.list");
+  assert.equal(listed.paths[0].folder, "exam/step-2", "the overview summary carries the folder");
+
+  const retagged = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: ["field:systems"],
+  });
+  assert.equal(retagged.path.folder, "exam/step-2", "an omitted folder leaves the filing alone");
+
+  const cleared = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: [],
+    folder: "",
+  });
+  assert.equal(cleared.path.folder, undefined, "an empty folder drops the key entirely");
+  const reloaded = await h.call<{ path: any }>("paths.get", { id: "path-linear-algebra" });
+  assert.equal(reloaded.path.folder, undefined, "the store round-trips the cleared record");
+
+  await h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [], folder: "field/systems" });
+  const nulled = await h.call<{ path: any }>("paths.updateMeta", {
+    pathId: "path-linear-algebra",
+    tags: [],
+    folder: null,
+  });
+  assert.equal(nulled.path.folder, undefined, "null also clears, mirroring tags");
+
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [], folder: 7 }),
+    /folder must be a string or null/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [], folder: "exam/" }),
+    /folder \(level 2\): must not be empty/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-linear-algebra", tags: [], folder: "x".repeat(41) }),
+    /folder \(level 1\): must be at most 40 characters/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", {
+      pathId: "path-linear-algebra",
+      tags: [],
+      folder: "a/b/c/d/e/f/g",
+    }),
+    /a folder has at most 6 levels/,
+  );
+  await assert.rejects(
+    h.call("paths.updateMeta", { pathId: "path-missing", tags: [], folder: "exam/step-2" }),
+    /Unknown path/,
+  );
+});
+
 test("paths.export renders validated JSON and Markdown with download metadata", async (t) => {
   const h = host(t);
   await createConversation(h);
@@ -715,4 +836,57 @@ test("paths.export is fenced once activation aborts", async (t) => {
     /shutting down/,
   );
   await h.cleanup();
+});
+
+test("get_learning_path lists node-linked workspace items by title, read through the chunk tool", async (t) => {
+  const h = host(t);
+  await createConversation(h);
+  const savedPath = await h.runTool<ToolResult>("save_learning_path", rawPath());
+  assert.equal(savedPath.isError, undefined, savedPath.details?.error);
+  const pathId = savedPath.details.pathId;
+  const stored = (await h.call<{ path: { modules: { nodes: { id: string; title: string }[] }[] } }>(
+    "paths.get",
+    { id: pathId },
+  )).path;
+  const nodeId = stored.modules[0]!.nodes[0]!.id;
+
+  // A converted document filed mid-path: the manifest references the global
+  // source; the Architect never receives content, only kind/title/sourceId.
+  const filed = await h.call<{ item: { id: string; sourceId: string } }>("workspace.saveSource", {
+    pathId,
+    name: "paper.pdf",
+    markdown: "# A paper\n\nNode-linked document text.",
+    links: [{ to: nodeId, rel: "grounds" }],
+  });
+  await h.call("workspace.saveNote", {
+    pathId,
+    title: "Feynman notes",
+    markdown: "Learner note text.",
+    links: [{ to: nodeId, rel: "informs" }],
+  });
+
+  const outline = await h.runTool<ToolResult>("get_learning_path", { id: pathId });
+  assert.equal(outline.isError, undefined, outline.details?.error);
+  const items = outline.details.path.workspace.items;
+  assert.deepEqual(items, [
+    {
+      kind: "source",
+      title: "paper.pdf",
+      sourceId: filed.item.sourceId,
+      linkedTo: [nodeId],
+    },
+    {
+      kind: "note",
+      title: "Feynman notes",
+      linkedTo: [nodeId],
+    },
+  ], "titles only: no content, no byteSize, no provenance in the outline");
+
+  // Reading a filed document stays on the existing bounded chunk tool.
+  const chunk = await h.runTool<ToolResult>("read_uploaded_source_chunk", {
+    sourceId: filed.item.sourceId,
+  });
+  assert.equal(chunk.isError, undefined);
+  assert.equal(chunk.details.text, "# A paper\n\nNode-linked document text.");
+  assert.equal(chunk.details.nextOffset, null);
 });

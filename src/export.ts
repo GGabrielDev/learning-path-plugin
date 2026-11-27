@@ -18,6 +18,7 @@ import type {
   PluginSettings,
   SourceSpine,
   UploadedSourceReference,
+  WorkspaceItem,
 } from "./domain.ts";
 import {
   ERROR_CATEGORY_LABELS,
@@ -39,6 +40,13 @@ export interface ExportedLearningPath {
 }
 
 const MAX_SLUG_LENGTH = 80;
+
+/** One workspace item prepared for export: the ledger entry plus its content
+ * verbatim (null for `source` items, which reference the global sources store). */
+export interface WorkspaceExportItem {
+  readonly item: WorkspaceItem;
+  readonly content: string | null;
+}
 
 /** Lowercase ASCII slug; every non-alphanumeric run becomes one hyphen. */
 function slugify(value: string): string {
@@ -179,10 +187,49 @@ function nodeLines(
   return lines;
 }
 
+/** The Workspace ledger, newest last: honest inventory of the learner's own
+ * material. Note content is appended exactly as stored — the workspace never
+ * reformats the learner's writing. */
+function workspaceLines(
+  items: readonly WorkspaceExportItem[],
+  nodeTitles: ReadonlyMap<string, string>,
+): string[] {
+  const lines = [
+    "## Workspace",
+    "",
+    "The learner's own material for this path, oldest first. Note content is verbatim.",
+  ];
+  const ordered = [...items].sort((a, b) => a.item.addedAt.localeCompare(b.item.addedAt));
+  for (const { item, content } of ordered) {
+    lines.push("", `#### ${item.title}`, "");
+    lines.push(
+      `- **Kind:** ${item.kind} · **Added by:** ${item.addedBy} · **Added at:** ${item.addedAt}`,
+    );
+    if (item.links.length > 0) {
+      lines.push(
+        `- **Links:** ${item.links
+          .map((link) => `${link.rel} → ${link.to === "space" ? "workspace" : nodeTitles.get(link.to) ?? link.to}`)
+          .join(", ")}`,
+      );
+    }
+    if (item.caption !== undefined) {
+      lines.push(`- **Caption:** ${item.caption}`);
+    }
+    if (item.kind === "source") {
+      lines.push(`- **Source:** \`${item.sourceId}\` (in the global sources store)`);
+    }
+    if (content !== null) {
+      lines.push("", content.replace(/\n+$/, ""));
+    }
+  }
+  return lines;
+}
+
 /** A rich, stable Markdown companion to the JSON export. */
 export function exportLearningPathAsMarkdown(
   path: LearningPath,
   settings?: PluginSettings,
+  workspace: readonly WorkspaceExportItem[] = [],
 ): string {
   const parsed = parseLearningPath(path);
   const nodes = parsed.modules.flatMap((module) => module.nodes);
@@ -197,6 +244,10 @@ export function exportLearningPathAsMarkdown(
       `- **Progress:** ${consolidated} of ${nodes.length} nodes consolidated · ${inProgress} in progress`,
       `- **Created:** ${parsed.createdAt}`,
       `- **Updated:** ${parsed.updatedAt}`,
+      ...(parsed.tags === undefined || parsed.tags.length === 0
+        ? []
+        : [`- **Tags:** ${parsed.tags.join(", ")}`]),
+      ...(parsed.folder === undefined ? [] : [`- **Folder:** ${parsed.folder}`]),
       ...(parsed.artifactDefault
         ? [`- **Default artifact:** ${artifactLabel(parsed.artifactDefault)}`]
         : []),
@@ -214,6 +265,9 @@ export function exportLearningPathAsMarkdown(
     moduleBlocks.push(lines.join("\n"));
   });
   blocks.push(["## Modules", "", ...moduleBlocks].join("\n\n"));
+  if (workspace.length > 0) {
+    blocks.push(workspaceLines(workspace, nodeTitles).join("\n"));
+  }
   return `${blocks.join("\n\n")}\n`;
 }
 
@@ -228,6 +282,7 @@ export function exportLearningPath(
   path: LearningPath,
   format: ExportFormat,
   settings?: PluginSettings,
+  workspace: readonly WorkspaceExportItem[] = [],
 ): ExportedLearningPath {
   assertExportFormat(format);
   const parsed = parseLearningPath(path);
@@ -240,7 +295,7 @@ export function exportLearningPath(
     content:
       format === "json"
         ? exportLearningPathAsJson(parsed)
-        : exportLearningPathAsMarkdown(parsed, settings),
+        : exportLearningPathAsMarkdown(parsed, settings, workspace),
   };
 }
 

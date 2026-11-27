@@ -15,7 +15,8 @@ import {
   exportLearningPathAsMarkdown,
   triggerBrowserDownload,
 } from "../src/export.ts";
-import { makePath } from "./fixtures.ts";
+import { ITEM_ID, ITEM_ID_2, makeItem, makePath } from "./fixtures.ts";
+import type { WorkspaceExportItem } from "../src/export.ts";
 
 function withLearnerNotes(path: LearningPath): LearningPath {
   return {
@@ -57,6 +58,14 @@ test("Markdown export renders the full path without losing learner state", () =>
   assert.match(markdown, /- \*\*Created:\*\* 2026-01-31T09:30:00\.000Z/);
   assert.match(markdown, /- \*\*Updated:\*\* 2026-01-31T09:30:00\.000Z/);
   assert.match(markdown, /- \*\*Default artifact:\*\* Retrieval cue \/ flashcard seed/);
+
+  const tagged = exportLearningPathAsMarkdown({ ...path, tags: ["exam:step-2", "field:systems"] });
+  assert.match(tagged, /- \*\*Tags:\*\* exam:step-2, field:systems/);
+  assert.doesNotMatch(markdown, /\*\*Tags:/, "an untagged path exports no empty tags line");
+
+  const filed = exportLearningPathAsMarkdown({ ...path, folder: "exam/step-2" });
+  assert.match(filed, /- \*\*Folder:\*\* exam\/step-2/);
+  assert.doesNotMatch(markdown, /\*\*Folder:/, "an unfiled path exports no empty folder line");
 
   assert.match(markdown, /## Source Spine/);
   assert.match(markdown, /- \*\*Mode:\*\* Canonical references/);
@@ -161,6 +170,45 @@ test("exportLearningPath validates the format and returns matching metadata", ()
   assert.equal(markdown.content, exportLearningPathAsMarkdown(path));
 
   assert.throws(() => exportLearningPath(path, "pdf" as never), /format must be one of/);
+});
+
+test("Markdown export carries the workspace ledger with note content verbatim, newest last", () => {
+  const path = makePath();
+  assert.doesNotMatch(exportLearningPathAsMarkdown(path), /## Workspace/, "an empty workspace exports no section");
+
+  const verbatim = "# Exactly as written\n\n- a  spaced  list\n\n```js\n  keepIndenting();\n```\n\n";
+  const items: WorkspaceExportItem[] = [
+    {
+      item: makeItem({ links: [{ to: "n-concept", rel: "informs" }], caption: "From Tuesday" }),
+      content: verbatim,
+    },
+    {
+      item: makeItem({
+        id: ITEM_ID_2,
+        kind: "source",
+        title: "A referenced paper",
+        sourceId: "123e4567-e89b-12d3-a456-426614174000",
+        addedAt: "2026-02-01T00:00:00.000Z",
+        links: [],
+      }),
+      content: null,
+    },
+  ];
+  const markdown = exportLearningPathAsMarkdown(path, undefined, items);
+
+  assert.match(markdown, /## Workspace\n\nThe learner's own material for this path, oldest first\./);
+  // Oldest first, newest last: the ledger keeps its flat order.
+  assert.ok(markdown.indexOf("Feynman notes on vector spaces") < markdown.indexOf("A referenced paper"));
+  assert.match(markdown, /#### Feynman notes on vector spaces/);
+  assert.match(markdown, /- \*\*Kind:\*\* note · \*\*Added by:\*\* learner · \*\*Added at:\*\* 2026-01-31T09:30:00\.000Z/);
+  assert.match(markdown, /- \*\*Links:\*\* informs → Node n-concept/);
+  assert.match(markdown, /- \*\*Caption:\*\* From Tuesday/);
+  assert.ok(markdown.includes(verbatim.replace(/\n+$/, "")), "note content round-trips exactly as stored");
+  assert.match(markdown, /- \*\*Source:\*\* `123e4567-e89b-12d3-a456-426614174000` \(in the global sources store\)/);
+  assert.doesNotMatch(markdown, /#### A referenced paper[\s\S]*?\*\*Content/, "source items carry no content block");
+
+  const exported = exportLearningPath(path, "markdown", undefined, items);
+  assert.equal(exported.content, markdown, "the RPC wrapper renders the same bytes");
 });
 
 test("triggerBrowserDownload clicks one temporary anchor and cleans it up", () => {
