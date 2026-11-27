@@ -13,7 +13,7 @@ import path from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ChatRecord } from "learnharness-plugin-api";
 import { openLearningPathStore } from "../src/store.ts";
-import { makeItem, makePath, AT } from "./fixtures.ts";
+import { ITEM_ID_2, ITEM_ID_3, ITEM_ID_4, makeItem, makePath, AT } from "./fixtures.ts";
 import { createHost } from "./host.ts";
 import type { TestHost } from "./host.ts";
 import { NATIVE_BRIDGE_INSTRUCTIONS } from "../src/native-bridge.ts";
@@ -763,6 +763,55 @@ test("map revisit cites the learner's saved relational maps instead of a redraw 
     const unaffected = await runTool(host.nativeTools("chat-map", "teacher"), "learning_path_get_brief", {});
     assert.match(unaffected.text, /"First relational map"/);
     assert.doesNotMatch(unaffected.text, /"Concept-node artifact"/);
+  } finally {
+    close(host, directory);
+  }
+});
+
+test("the workspace read tool serves linked items only: unlinked material is never agent context", async () => {
+  const directory = temporaryDirectory();
+  const store = openLearningPathStore(directory);
+  store.savePath(makePath());
+  // The learner's private scratchpad: unlinked, and linked to a different
+  // node than the one this session teaches.
+  const unlinked = store.saveWorkspaceItem(
+    "path-linear-algebra",
+    makeItem({ id: ITEM_ID_2, title: "Private scratchpad", links: [] }),
+    "never enters agent context",
+  );
+  const otherNode = store.saveWorkspaceItem(
+    "path-linear-algebra",
+    makeItem({ id: ITEM_ID_3, title: "Filed under another node", links: [{ to: "n-concept", rel: "informs" }] }),
+    "filed elsewhere",
+  );
+  const linked = store.saveWorkspaceItem(
+    "path-linear-algebra",
+    makeItem({ id: ITEM_ID_4, title: "Filed under this node", links: [{ to: "n-skill", rel: "informs" }] }),
+    "agent-readable",
+  );
+  const host = createHost({ dataDirectory: directory, chats: [chat("chat-skill", "practice")] });
+  try {
+    await host.call("sessions.link", {
+      pathId: "path-linear-algebra",
+      nodeId: "n-skill",
+      chatId: "chat-skill",
+      kind: "practice",
+    });
+    const tools = host.nativeTools("chat-skill", "practice");
+
+    const refusedUnlinked = await runTool(tools, "learning_path_read_workspace_item", { itemId: unlinked.id });
+    assert.equal(refusedUnlinked.isError, true);
+    assert.match(refusedUnlinked.text, /is not linked to this node/);
+    assert.doesNotMatch(refusedUnlinked.text, /never enters agent context/, "the body never leaks through the error");
+    assert.match(refusedUnlinked.text, new RegExp(linked.id), "the error offers the linked items instead");
+
+    const refusedOther = await runTool(tools, "learning_path_read_workspace_item", { itemId: otherNode.id });
+    assert.equal(refusedOther.isError, true);
+    assert.match(refusedOther.text, /is not linked to this node/);
+
+    const served = await runTool(tools, "learning_path_read_workspace_item", { itemId: linked.id });
+    assert.equal(served.isError, false);
+    assert.equal(served.details.text, "agent-readable");
   } finally {
     close(host, directory);
   }

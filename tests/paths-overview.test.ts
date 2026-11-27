@@ -110,6 +110,17 @@ test("the overview renders one honest-inventory card per path and none when empt
     );
     const strip = first.querySelector(".lp-distribution")!;
     assert.equal(strip.getAttribute("aria-label"), "1 consolidated · 2 in progress · 3 unstarted");
+
+    // Filing lives at the card's foot: the Edit tags affordance is the card's
+    // last row, an icon-only tag glyph whose label stays the accessible name.
+    const footer = first.querySelector<HTMLElement>(".lp-path-card-footer")!;
+    assert.ok(footer, "the card carries a footer row");
+    assert.equal(footer, first.lastElementChild, "the footer sits at the very bottom of the card");
+    const edit = cardButton(fixture, "path-linear-algebra", "Edit tags");
+    assert.ok(footer.contains(edit.container), "the footer hosts the filing affordance");
+    assert.equal(edit.props.iconOnly, true, "Edit tags reads as a glyph, not words");
+    assert.match(String(edit.props.icon ?? ""), /<svg/, "the glyph is the tag icon");
+    assert.match(String(edit.props.title ?? ""), /Edit tags — Linear algebra/, "hover carries the words");
   } finally {
     fixture.restore();
   }
@@ -426,6 +437,67 @@ test("Edit tags saves through paths.updateMeta, refetches and renders the new fi
     const card = fixture.root.querySelector<HTMLElement>('.lp-path-card[data-path-id="path-linear-algebra"]')!;
     assert.match(card.textContent ?? "", /exam:step-2/);
     assert.equal(dialog.disposed >= 1, true, "a successful save closes the dialog");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("Delete path removes the path through paths.delete and refetches the overview", async () => {
+  const fixture = createViewFixture({
+    paths: [makePath(), makeTaggedPath("path-two", ["field:systems"])],
+    conversations: [snapshot("chat-architect")],
+  });
+  try {
+    await mounted(fixture);
+    const listCallsBefore = fixture.calls.filter((call) => call.name === "paths.list").length;
+
+    await cardButton(fixture, "path-linear-algebra", "Delete path").props.onClick();
+    await fixture.flush();
+    const dialog = fixture.findLast("openDialog");
+    assert.equal(dialog.props.title, "Delete the learning path \"Linear algebra from canon\"?");
+    assert.match(
+      dialog.contentContainer!.textContent ?? "",
+      /Native LearnHarness chats and Knowledge Graph records are never deleted/,
+      "the dialog says what stays",
+    );
+
+    // Keep path closes without a write.
+    const keep = fixture
+      .all("mountButton")
+      .find((record) => dialog.contentContainer!.contains(record.container) && record.props.label === "Keep path")!;
+    await keep.props.onClick();
+    await fixture.flush();
+    assert.equal(dialog.disposed >= 1, true, "Keep path dismisses the dialog");
+    assert.equal(fixture.calls.some((call) => call.name === "paths.delete"), false, "nothing was deleted");
+    assert.equal(
+      fixture.calls.filter((call) => call.name === "paths.list").length,
+      listCallsBefore,
+      "no refetch for a kept path",
+    );
+
+    // Delete path is the settings page's same one write, then the hub refetches.
+    await cardButton(fixture, "path-linear-algebra", "Delete path").props.onClick();
+    await fixture.flush();
+    const confirmDialog = fixture.findLast("openDialog");
+    const remove = fixture
+      .all("mountButton")
+      .find((record) => confirmDialog.contentContainer!.contains(record.container) && record.props.label === "Delete path")!;
+    await remove.props.onClick();
+    await fixture.flush();
+    await fixture.flush();
+
+    assert.deepEqual(
+      fixture.calls.filter((call) => call.name === "paths.delete").at(-1)?.input,
+      { pathId: "path-linear-algebra" },
+      "the affordance goes through the backend RPC",
+    );
+    assert.equal(fixture.paths.has("path-linear-algebra"), false, "the path record is gone");
+    assert.ok(
+      fixture.calls.filter((call) => call.name === "paths.list").length > listCallsBefore,
+      "the hub refetches after the delete",
+    );
+    assert.ok(!visibleIds(fixture.root).includes("path-linear-algebra"), "the card is gone after the refetch");
+    assert.ok(visibleIds(fixture.root).includes("path-two"), "the other path stays");
   } finally {
     fixture.restore();
   }

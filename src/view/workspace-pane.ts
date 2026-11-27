@@ -1,19 +1,21 @@
 /** Learning Path — the Workspace ledger pane.
  *
- * A floating, closable, scrollable pane over the Path Hub, opened from the Node
- * Inspector's single Workspace affordance (the inline list left the inspector
- * after live review — see docs/proposals/workspace-manifest.md, "Live-review
- * overrides"). The pane is one flat, navigational inventory of the learner's
- * own material for one path: metadata only, newest last, an honest item count.
- * The guardrails are binding: no unread counts, no "new" badges, and no
- * scheduling semantics of any kind — the ledger records what exists, never
- * what is owed.
+ * The workspace ledger, mounted as the Workspace tab of the Path Hub's
+ * floating details window — the same window, the same treatment as the node
+ * details (pinned under the header, drag-resized, expanded, closed; see
+ * docs/proposals/workspace-manifest.md, "Live-review overrides"). The pane is
+ * one flat, navigational inventory of the learner's own material for one path:
+ * metadata only, newest last, an honest item count. The guardrails are
+ * binding: no unread counts, no "new" badges, and no scheduling semantics of
+ * any kind — the ledger records what exists, never what is owed.
  *
- * Content is lazy: the pane lists titles only, and an item's Markdown body is
- * fetched through `workspace.readItem` (read-only, bounded) only when the
- * learner opens it in the pane's viewer. A `source` item references the global
- * sources store and carries no content file, so its viewer says so instead of
- * fetching nothing.
+ * The list itself is the host tree (`ctx.ui.mountTree`): the host owns rows,
+ * columns, keyboard navigation and virtualization, and the pane only supplies
+ * controlled rows. Content is lazy: the tree lists titles only, and an item's
+ * Markdown body is fetched through `workspace.readItem` (read-only, bounded)
+ * only when the learner expands the row's in-place preview. A `source` item
+ * references the global sources store and carries no content file, so its
+ * preview says so without fetching anything.
  *
  * Multi-node filing: a note is created unlinked or linked to several nodes at
  * once, and any item's links are edited from the pane through a node picker
@@ -31,18 +33,29 @@
  * into the workspace.
  *
  * Reading: item kinds render as small icons (hover carries the word), and an
- * opened item reads in a bounded, scrolling viewer. The pane bar's hub-owned
- * affordances do the rest: Fullscreen stretches the pane across the whole
- * window and lifts the viewer's scroll cap so a long note reads whole, and
- * Open folder reveals the path's workspace directory through
- * `workspace.openDirectory`.
+ * expanded row previews its body in place — the note never leaves the list, so
+ * there is no separate viewer to reposition and no fullscreen toggle to break
+ * hit targets; the window's own Expand gives the ledger its big reading
+ * surface, exactly as it does the details. The pane header carries Open
+ * folder (revealing the path's workspace directory through
+ * `workspace.openDirectory`) beside Add Note. An item that owns a content
+ * file can also leave the list entirely: Open in editor hands the file to the
+ * OS, which opens the learner's chosen application (prompting for one where
+ * no default exists) — the harness never pretends to be an editor, and the
+ * frontmatter keeps an external edit resyncable.
  *
  * Learner-only writes. Agents never create, edit, link or delete learner
  * items. Everything rendered here is controlled by the caller (path, node and
  * workspace after each refetch) and every widget belongs to the per-mount
  * signal.
  */
-import type { PluginFrontendContext, PluginWidgetHandle } from "learnharness-plugin-api";
+import type {
+  PluginFrontendContext,
+  PluginTreeContent,
+  PluginTreeProps,
+  PluginTreeRow,
+  PluginWidgetHandle,
+} from "learnharness-plugin-api";
 import type {
   LearningPath,
   PathNode,
@@ -96,6 +109,13 @@ export interface WorkspacePaneOptions {
   /** Lazy content read (workspace.readItem): resolved only when the learner
    * opens an item. Null content means the item carries no file (a source). */
   readItem(itemId: string): Promise<string | null>;
+  /** Reveal the path's workspace folder in the OS file manager
+   * (workspace.openDirectory). */
+  openDirectory(): void | Promise<void>;
+  /** Open one item's content file outside the harness
+   * (workspace.openItem): the OS resolves the application — prompting the
+   * learner to pick one wherever no default is registered. */
+  openItem(itemId: string): void | Promise<void>;
 }
 
 export interface WorkspacePane {
@@ -116,13 +136,40 @@ const KIND_LABELS: Readonly<Record<WorkspaceItem["kind"], string>> = {
 const KIND_ICON_PATHS: Readonly<Record<WorkspaceItem["kind"], readonly string[]>> = {
   // A pencil: the learner's own writing.
   note: ["M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"],
-  // A medal: something a session produced and saved.
-  session_artifact: ["M12 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z", "m9.5 13.2-2 8.8 4.5-2.7 4.5 2.7-2-8.8"],
+  // A medal: something a session produced and saved. Ribbon tails up top,
+  // the disc below — the way a worn medal hangs.
+  session_artifact: ["M12 10a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z", "m9.5 10.8-2-8.8 4.5 2.7 4.5-2.7-2 8.8"],
   // A document with text lines: converted material.
   source: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M16 13H8", "M16 17H8"],
   // A terminal prompt: code the learner wrote.
   code: ["m16 18 6-6-6-6", "m8 6-6 6 6 6", "M12 19h8"],
 };
+
+/** A plus: the header's one affordance for adding a note. */
+const PLUS_ICON_PATHS = ["M5 12h14", "M12 5v14"] as const;
+/** An open folder: reveals the workspace directory in the OS file manager. */
+const FOLDER_OPEN_ICON_PATHS = [
+  "m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.51l-1.55 6a2 2 0 0 1-1.94 1.49H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2",
+] as const;
+/** A chain link: filing an item under the path's nodes. */
+const LINK_ICON_PATHS = [
+  "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71",
+  "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+] as const;
+/** A trashcan: removing one item from the ledger. */
+const TRASH_ICON_PATHS = [
+  "M3 6h18",
+  "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6",
+  "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",
+  "M10 11v6",
+  "M14 11v6",
+] as const;
+/** An outbound arrow: handing the item's file to the learner's own editor. */
+const OPEN_EDITOR_ICON_PATHS = [
+  "M15 3h6v6",
+  "M10 14 21 3",
+  "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6",
+] as const;
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
@@ -181,42 +228,59 @@ export function createWorkspacePane(
   /** Dialog handles live outside `container`, so they are tracked separately. */
   let dialogHandles: PluginWidgetHandle<unknown>[] = [];
 
-  /** Viewer state survives the refetch-re-renders, so an open note stays open
-   * with its already-fetched content instead of re-reading on every refresh. */
-  let viewerItemId: string | null = null;
-  let viewerContent: string | null = null;
-  let viewerState: "loading" | "loaded" | "error" = "loaded";
-  let viewerError = "";
+  /** Preview state survives refetch-re-renders, so an expanded row stays
+   * expanded with its already-fetched content instead of re-reading on every
+   * refresh. The cache holds null for an item that carries no content file. */
+  const expandedItemIds = new Set<string>();
+  const previewCache = new Map<string, string | null>();
+  const previewErrors = new Map<string, string>();
+  /** The mounted ledger tree. Disclosure toggles and landed reads update the
+   * rows in place through this handle, so other expanded previews and their
+   * content mounts survive without a remount. */
+  let ledgerTree: PluginWidgetHandle<PluginTreeProps> | null = null;
 
   const clear = (): void => {
+    ledgerTree = null;
     for (const handle of handles.reverse()) handle.dispose();
     handles = [];
     container.replaceChildren();
   };
 
-  const button = (
+  /** Native DOM button: the pane is a hub layout column whose rows and
+   * previews reflow freely; host widgets are kept only where the host owns
+   * positioning (the window bar and dialogs). With `icon` the button is
+   * icon-only — the label stays the accessible name (aria-label) and the
+   * hover title carries the word. */
+  const nativeButton = (
     parent: HTMLElement,
     label: string,
     onClick: () => void,
-    extra: { variant?: "default" | "link" | "outline" | "ghost" | "secondary"; size?: "xs" | "sm"; title?: string } = {},
-  ): void => {
-    const host = element(document, "span", "lp-button-host");
-    parent.append(host);
-    handles.push(
-      ctx.ui.mountButton(
-        host,
-        {
-          label,
-          variant: extra.variant ?? "outline",
-          size: extra.size ?? "sm",
-          ...(extra.title === undefined ? {} : { title: extra.title }),
-          onClick: () => {
-            if (!signal.aborted && !disposed) onClick();
-          },
-        },
-        { signal },
-      ),
-    );
+    extra: {
+      variant?: "default" | "link" | "outline" | "ghost" | "secondary";
+      size?: "xs" | "sm";
+      title?: string;
+      icon?: readonly string[];
+    } = {},
+  ): HTMLButtonElement => {
+    const classes = ["lp-btn", `lp-btn-${extra.variant ?? "outline"}`];
+    if (extra.size) classes.push(`lp-btn-${extra.size}`);
+    if (extra.icon) classes.push("lp-btn-icon");
+    const btn = document.createElement("button");
+    btn.className = classes.join(" ");
+    btn.type = "button";
+    if (extra.icon) {
+      btn.setAttribute("aria-label", label);
+      btn.title = extra.title ?? label;
+      btn.append(svgIcon(document, extra.icon));
+    } else {
+      btn.textContent = label;
+      if (extra.title) btn.title = extra.title;
+    }
+    btn.addEventListener("click", () => {
+      if (!signal.aborted && !disposed) onClick();
+    });
+    parent.append(btn);
+    return btn;
   };
 
   // The picker is the one filing surface: checkboxes, not drag order, never
@@ -585,20 +649,13 @@ export function createWorkspacePane(
     fileInput.hidden = true;
     fileInput.setAttribute("aria-label", "Select a PDF or text file from your computer");
     zone.append(fileInput);
-    handles.push(
-      ctx.ui.mountButton(
-        pickerHost,
-        {
-          label: "Select from computer…",
-          variant: "outline",
-          size: "sm",
-          title: "Pick a PDF or text file to convert and file in this workspace",
-          onClick: () => {
-            if (!signal.aborted && !disposed) fileInput.click();
-          },
-        },
-        { signal },
-      ),
+    nativeButton(
+      pickerHost,
+      "Select from computer…",
+      () => {
+        if (!signal.aborted && !disposed) fileInput.click();
+      },
+      { variant: "outline", size: "sm", title: "Pick a PDF or text file to convert and file in this workspace" },
     );
     fileInput.addEventListener(
       "change",
@@ -641,128 +698,150 @@ export function createWorkspacePane(
     return zone;
   }
 
-  /** Open the read-only viewer: the item's content is fetched now, on demand,
-   * through `workspace.readItem` — never as part of listing the ledger. */
-  function openViewer(item: WorkspaceItem): void {
-    if (signal.aborted || disposed) return;
-    viewerItemId = item.id;
-    viewerContent = null;
-    viewerState = "loading";
-    viewerError = "";
-    // The caller re-renders after the fetch resolves; the pane paints the
-    // loading state immediately so the demand-read is visible.
-    void (async () => {
-      try {
-        const content = await options.readItem(item.id);
-        if (signal.aborted || disposed || viewerItemId !== item.id) return;
-        viewerContent = content;
-        viewerState = "loaded";
-      } catch (problem) {
-        if (signal.aborted || disposed || viewerItemId !== item.id) return;
-        viewerState = "error";
-        viewerError = describeError(problem);
-      }
-      rerender();
-    })();
-    rerender();
-  }
-
   /** A source item references the global sources store; it has no content file
-   * of its own, so the viewer says where its text lives instead. */
-  const SOURCE_VIEWER_NOTE =
+   * of its own, so its preview says where its text lives — nothing is fetched. */
+  const SOURCE_PREVIEW_NOTE =
     "This source lives in the path's source library; its text is read there, not stored in the workspace.";
 
-  function viewer(item: WorkspaceItem): HTMLElement {
-    const root = element(document, "div", "lp-workspace-viewer");
-    const head = element(document, "div", "lp-workspace-viewer-head");
-    button(head, "Back to list", () => {
-      viewerItemId = null;
-      viewerContent = null;
-      viewerState = "loaded";
-      rerender();
-    }, { variant: "outline" });
-    const meta = element(document, "div", "lp-workspace-viewer-meta");
-    meta.append(element(document, "p", "lp-workspace-item-title", item.title));
-    meta.append(kindIcon(document, item.kind));
-    if (item.kind === "session_artifact" && item.addedBy.startsWith("session:")) {
-      meta.append(
-        element(document, "span", "lp-muted", `saved by ${item.addedBy.replace(":", " ")}`),
-      );
-    }
-    head.append(meta);
-    root.append(head);
+  /** A content-bearing item whose file is missing: honest, never an error. */
+  const NO_CONTENT_NOTE =
+    "This item carries no content file of its own; there is nothing to read here.";
 
-    // Scrollable, never squashed: the note reads inside its own bounded
-    // window, and the hub's Fullscreen toggle (in the pane bar) stretches
-    // the whole pane and lifts this cap so the full text reads whole.
-    const body = element(document, "div", "lp-workspace-viewer-content");
-    if (viewerState === "loading") {
-      body.append(element(document, "p", "lp-muted", "Loading…"));
-    } else if (viewerState === "error") {
-      const error = element(document, "p", "lp-dialog-error", `Could not read the item: ${viewerError}`);
-      error.setAttribute("role", "alert");
-      body.append(error);
-    } else if (item.kind === "source" || viewerContent === null) {
-      body.append(element(document, "p", "lp-muted", SOURCE_VIEWER_NOTE));
-    } else {
-      const host = element(document, "div", "lp-workspace-viewer-markdown");
-      body.append(host);
-      // Read-only rendering: mountMarkdown draws the stored Markdown verbatim.
-      handles.push(ctx.ui.mountMarkdown(host, { text: viewerContent }, { signal }));
-    }
-    root.append(body);
-    return root;
+  /** Rebuild the ledger rows from the caller's last-seen state and push them
+   * into the mounted tree in place — no remount, so expanded previews and
+   * their content mounts survive a disclosure toggle and a landed read. */
+  function updateLedgerRows(): void {
+    if (!ledgerTree || disposed || signal.aborted || !lastPath) return;
+    const items = [...(lastWorkspace?.items ?? [])].sort((a, b) => a.addedAt.localeCompare(b.addedAt));
+    ledgerTree.update({ rows: items.map((item) => treeRow(item, lastPath!, lastNode)) });
   }
 
-  /** One flat ledger row: title (opens the viewer), kind, links, actions. */
-  function itemRow(
-    item: WorkspaceItem,
-    path: LearningPath,
-    node: PathNode | null,
-  ): HTMLElement {
-    const row = element(document, "li", "lp-workspace-row");
-    row.dataset.itemId = item.id;
-    const title = element(document, "span", "lp-workspace-row-title");
-    // The title itself is the affordance: opening the viewer is the row's
-    // primary action, and the content is only fetched at that moment.
-    button(title, item.title, () => openViewer(item), {
-      variant: "link",
-      title: `Open ${item.title}`,
-    });
-    row.append(title);
-    // The kind reads as its icon; hover (title) carries the word.
-    row.append(kindIcon(document, item.kind));
-    // Honest inventory of where the item is filed; no unread or new state.
+  /** Expanding a row is the only moment content is read: the fetch is lazy
+   * (`workspace.readItem`), the tree paints the loading preview at once, and
+   * the rows update in place when the read lands. Collapsing never re-reads. */
+  function expandPreview(item: WorkspaceItem): void {
+    expandedItemIds.add(item.id);
+    if (item.kind !== "source" && !previewCache.has(item.id) && !previewErrors.has(item.id)) {
+      void (async () => {
+        try {
+          const content = await options.readItem(item.id);
+          if (signal.aborted || disposed) return;
+          previewCache.set(item.id, content);
+          previewErrors.delete(item.id);
+        } catch (problem) {
+          if (signal.aborted || disposed) return;
+          previewErrors.set(item.id, describeError(problem));
+        }
+        updateLedgerRows();
+      })();
+    }
+    updateLedgerRows();
+  }
+
+  /** The expanded preview row: rendered inside the tree, under its item. */
+  function previewRow(item: WorkspaceItem): PluginTreeRow {
+    return {
+      key: `${item.id}-preview`,
+      content: previewContent(item),
+    };
+  }
+
+  function previewContent(item: WorkspaceItem): PluginTreeContent {
+    if (item.kind === "source") return SOURCE_PREVIEW_NOTE;
+    const error = previewErrors.get(item.id);
+    if (error !== undefined) return `Could not read the item: ${error}`;
+    if (!previewCache.has(item.id)) return "Loading…";
+    const text = previewCache.get(item.id);
+    if (text === null || text === undefined) return NO_CONTENT_NOTE;
+    return (container: HTMLElement, contentSignal: AbortSignal): (() => void) => {
+      const host = element(document, "div", "lp-workspace-preview");
+      container.append(host);
+      // Read-only rendering, scoped to the tree's content mount: the host
+      // disposes it when the row collapses, is replaced or unmounts.
+      ctx.ui.mountMarkdown(host, { text }, { signal: contentSignal });
+      return () => {
+        host.remove();
+      };
+    };
+  }
+
+  /** One ledger row: the title reads in the tree's lead column, kind, filing
+   * and actions read as columns, and the disclosure expands the item's body in
+   * place — the note never leaves the list, so there is no separate viewer. */
+  function treeRow(item: WorkspaceItem, path: LearningPath, node: PathNode | null): PluginTreeRow {
+    const expanded = expandedItemIds.has(item.id);
+    return {
+      key: item.id,
+      content: item.title,
+      cells: {
+        kind: kindIcon(document, item.kind),
+        filed: filedUnderText(item, path, node),
+        actions: rowActions(item, path),
+      },
+      disclosure: {
+        label: `Preview ${item.title}`,
+        expanded,
+        onChange: (next: boolean) => {
+          if (signal.aborted || disposed) return;
+          if (next) {
+            expandPreview(item);
+            return;
+          }
+          expandedItemIds.delete(item.id);
+          updateLedgerRows();
+        },
+      },
+      ...(expanded ? { children: [previewRow(item)] } : {}),
+    };
+  }
+
+  /** Honest inventory of where the item is filed; no unread or new state.
+   * Session artifacts carry their provenance: which session saved them. */
+  function filedUnderText(item: WorkspaceItem, path: LearningPath, node: PathNode | null): string {
     const nodeTitles = item.links.flatMap((link) => {
       const target = path.modules.flatMap((module) => module.nodes).find((candidate) => candidate.id === link.to);
       return target ? [`${target.title} (${link.rel})`] : [];
     });
-    if (nodeTitles.length > 0) {
-      row.append(element(document, "span", "lp-muted lp-workspace-links", `linked: ${nodeTitles.join(", ")}`));
-    } else {
-      row.append(element(document, "span", "lp-muted lp-workspace-links", "unlinked"));
-    }
-    if (node && item.links.some((link) => link.to === node.id)) {
-      row.append(element(document, "span", "lp-muted", "linked here"));
-    }
-    // Session artifacts carry their provenance: which session saved them.
+    const parts: string[] = [];
+    if (nodeTitles.length > 0) parts.push(`linked: ${nodeTitles.join(", ")}`);
+    else parts.push("unlinked");
+    if (node && item.links.some((link) => link.to === node.id)) parts.push("linked here");
     if (item.kind === "session_artifact" && item.addedBy.startsWith("session:")) {
-      row.append(
-        element(document, "span", "lp-muted", `saved by ${item.addedBy.replace(":", " ")}`),
-      );
+      parts.push(`saved by ${item.addedBy.replace(":", " ")}`);
     }
-    const actions = element(document, "span", "lp-workspace-row-actions");
-    row.append(actions);
-    button(actions, "Links…", () => openLinksDialog(path, item), { title: `Edit links for ${item.title}` });
-    button(actions, "Delete", () => {
-      void options.deleteItem(item.id);
-    }, { variant: "ghost" });
-    return row;
+    return parts.join(" · ");
   }
 
-  function rerender(): void {
-    // Re-render with the caller's last-seen state; render() stores it.
-    renderState(lastPath, lastNode, lastWorkspace);
+  function rowActions(item: WorkspaceItem, path: LearningPath): HTMLElement {
+    const actions = element(document, "span", "lp-workspace-row-actions");
+    // Row actions are icon-only (the label stays the accessible name, the
+    // hover title carries the word), so the Actions column stays compact:
+    // an outbound arrow for the editor, a chain link for filing, a trashcan
+    // for removal.
+    if (item.kind !== "source") {
+      nativeButton(
+        actions,
+        "Open in editor…",
+        () => {
+          void options.openItem(item.id);
+        },
+        {
+          variant: "ghost",
+          size: "sm",
+          title: `Open ${item.title} in an editor on your computer`,
+          icon: OPEN_EDITOR_ICON_PATHS,
+        },
+      );
+    }
+    nativeButton(actions, "Links…", () => openLinksDialog(path, item), {
+      size: "sm",
+      title: "Link to a node",
+      icon: LINK_ICON_PATHS,
+    });
+    nativeButton(actions, "Delete", () => {
+      void options.deleteItem(item.id);
+    }, { variant: "ghost", size: "sm", title: `Delete ${item.title}`, icon: TRASH_ICON_PATHS });
+    return actions;
   }
 
   let lastPath: LearningPath | null = null;
@@ -775,7 +854,6 @@ export function createWorkspacePane(
     workspace: WorkspaceManifest | null,
   ): void {
     if (disposed || signal.aborted) return;
-    const scroll = container.scrollTop;
     clear();
     lastPath = path;
     lastNode = node;
@@ -786,46 +864,40 @@ export function createWorkspacePane(
       a.addedAt.localeCompare(b.addedAt),
     );
 
-    const viewerItem = viewerItemId === null ? null : items.find((item) => item.id === viewerItemId) ?? null;
-    if (viewerItemId !== null && viewerItem === null) {
-      // The open item is gone (deleted); the list is the honest state.
-      viewerItemId = null;
-      viewerContent = null;
-      viewerState = "loaded";
-    }
-
     const header = element(document, "div", "lp-workspace-header");
     // Honest inventory only: no unread counts, no "new" badges anywhere.
     header.append(
       element(document, "span", "lp-muted", `${items.length} item${items.length === 1 ? "" : "s"}`),
     );
-    const addHost = element(document, "span", "lp-button-host");
-    header.append(addHost);
+    const headerActions = element(document, "span", "lp-workspace-row-actions");
+    header.append(headerActions);
     container.append(header);
-    handles.push(
-      ctx.ui.mountButton(
-        addHost,
-        {
-          label: "Add Note",
-          variant: "default",
-          size: "sm",
-          onClick: () => {
-            if (!signal.aborted && !disposed) openAddNoteDialog(path, node);
-          },
-        },
-        { signal },
-      ),
+    nativeButton(
+      headerActions,
+      "Open folder",
+      () => {
+        void options.openDirectory();
+      },
+      {
+        variant: "outline",
+        size: "sm",
+        title: "Open this workspace's folder in your computer's file manager",
+        icon: FOLDER_OPEN_ICON_PATHS,
+      },
+    );
+    nativeButton(
+      headerActions,
+      "Add Note",
+      () => {
+        if (!signal.aborted && !disposed) openAddNoteDialog(path, node);
+      },
+      { variant: "outline", size: "sm", title: "Add a note to this workspace", icon: PLUS_ICON_PATHS },
     );
 
     // The one filing affordance for documents: drag-and-drop and the native
-    // picker share this strip, and only it accepts a drop — never the pane's
-    // list, viewer or the path surfaces behind the floating pane.
+    // picker share this strip, and only it accepts a drop — never the ledger
+    // tree or the path surfaces beside the pane.
     container.append(dropzone());
-
-    if (viewerItem !== null) {
-      container.append(viewer(viewerItem));
-      return;
-    }
 
     if (items.length === 0) {
       container.append(
@@ -839,11 +911,27 @@ export function createWorkspacePane(
       return;
     }
 
-    const list = element(document, "ul", "lp-workspace-list");
-    // Newest last: the ledger reads like a flat history of what was added.
-    for (const item of items) list.append(itemRow(item, path, node));
+    // The ledger list is the host tree: the host owns rows, columns, keyboard
+    // navigation and virtualization; newest last reads like a flat history of
+    // what was added, and expanded rows preview their bodies in place.
+    const list = element(document, "div", "lp-workspace-list");
     container.append(list);
-    container.scrollTop = scroll;
+    const tree = ctx.ui.mountTree(
+      list,
+      {
+        label: "Workspace ledger",
+        header: "Title",
+        rows: items.map((item) => treeRow(item, path, node)),
+        columns: [
+          { key: "kind", header: "Kind", width: 72 },
+          { key: "filed", header: "Filed under", width: "16rem" },
+          { key: "actions", header: "Actions", width: "7rem" },
+        ],
+      },
+      { signal },
+    );
+    handles.push(tree);
+    ledgerTree = tree;
   }
 
   return {

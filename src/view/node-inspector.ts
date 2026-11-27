@@ -23,7 +23,6 @@ import type {
   PathNode,
   PivotSuggestion,
   ProgressionState,
-  WorkspaceManifest,
 } from "../domain.ts";
 import type { ChildSessionKind } from "../domain.ts";
 import type { SessionStatus } from "../session-types.ts";
@@ -62,9 +61,6 @@ export interface NodeInspectorOptions {
   updateNode(change: NodeInspectorChange): void | Promise<void>;
   /** Resolve/unresolve one ledger entry or edit its reflection note. */
   updateError(errorId: string, change: ErrorLedgerChange): void | Promise<void>;
-  /** Open or close the floating workspace ledger pane. The inspector itself
-   * carries only this one affordance; the pane does the rest. */
-  toggleWorkspace(): void;
   /** Accept or dismiss one advisory pivot proposal. */
   decidePivot(pivotId: string, decision: PivotDecision): void | Promise<void>;
   /** Hand a pivot diagnosis to the Architect for discussion. */
@@ -72,7 +68,7 @@ export interface NodeInspectorOptions {
 }
 
 export interface NodeInspector {
-  render(path: LearningPath | null, node: PathNode | null, workspace?: WorkspaceManifest | null): void;
+  render(path: LearningPath | null, node: PathNode | null): void;
   dispose(): void;
 }
 
@@ -179,7 +175,7 @@ export function createNodeInspector(
     return wrapper;
   };
 
-  const renderSelected = (path: LearningPath, node: PathNode, workspaceManifest: WorkspaceManifest | null): void => {
+  const renderSelected = (path: LearningPath, node: PathNode): void => {
     root.dataset.nodeId = node.id;
 
     const header = element(document, "header", "lp-inspector-header");
@@ -411,32 +407,10 @@ export function createNodeInspector(
       chats.append(list);
     }
 
-    // One calm affordance instead of an inline list: the ledger lives in the
-    // floating pane (live-review override), so the inspector stays light.
-    const workspace = section("Workspace");
-    const workspaceOpen = element(document, "div", "lp-workspace-open");
-    const itemCount = workspaceManifest?.items.length ?? 0;
-    button(
-      workspaceOpen,
-      itemCount === 0
-        ? "Workspace ledger"
-        : `Workspace ledger (${itemCount} item${itemCount === 1 ? "" : "s"})`,
-      () => options.toggleWorkspace(),
-      { variant: "outline", size: "sm" },
-    );
-    workspaceOpen.append(
-      element(
-        document,
-        "p",
-        "lp-muted",
-        "Your notes, artifacts and sources for this path — opens the ledger pane.",
-      ),
-    );
-    workspace.append(workspaceOpen);
   };
 
   return {
-    render(path, node, workspaceManifest = null) {
+    render(path, node) {
       if (disposed || signal.aborted) return;
       clear();
       root.removeAttribute("data-node-id");
@@ -446,7 +420,7 @@ export function createNodeInspector(
         errorLedger.render(null, null);
         return;
       }
-      renderSelected(path, node, workspaceManifest);
+      renderSelected(path, node);
     },
     dispose() {
       if (disposed) return;

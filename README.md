@@ -169,7 +169,10 @@ Knowledge Graph records.
 6. **Tune defaults.** Settings → Learning Paths configures artifact defaults per
    node type (with the framework's justification), experimental graph-informed
    tutoring (default off), the Architect model/thinking preference, and safe path
-   deletion. Saving a new Architect model while an
+   deletion. A path can also be deleted straight from the Path Hub's Paths
+   overview — the trashcan at a card's foot opens a dialog that names exactly
+   what goes (the path record, its workspace, orphaned converted uploads) and
+   what stays (native chats, Knowledge Graph records). Saving a new Architect model while an
    Architect run is in progress never cancels it; the model applies once the run
    finishes.
 7. **Export a path.** Use **Export Path** in the Path Hub, or **Export JSON** /
@@ -306,12 +309,17 @@ the source's id and never copies content — so re-uploading the same file reuse
 the stored copy and never files it twice.
 
 The pane itself stays honest and navigable: item kinds read as small icons
-(hover carries the word), an opened note renders in a bounded, scrolling
-viewer, **Fullscreen** stretches the ledger across the whole window (lifting
-the note's scroll cap so the full text reads with ordinary scrolling), and
-**Open folder** reveals the selected path's workspace directory in your
-computer's file manager (`workspace.openDirectory`; the folder materializes
-on demand, and an empty workspace opens too).
+(hover carries the word), an expanded row previews its body in place, the
+floating window's **Expand** stretches the ledger across the whole window —
+pinned below the header so its own bar stays clickable — and **Open folder**
+reveals the selected path's workspace directory in your computer's file
+manager (`workspace.openDirectory`; the folder materializes on demand, and
+an empty workspace opens too). An item that owns a content file can also
+leave the list: **Open in editor…** hands the file to the OS
+(`workspace.openItem`), which opens your chosen application — prompting for
+one wherever no default is registered — and whatever the editor writes back
+lands through the ledger's resync. A `source` references the global library
+and offers no such affordance.
 
 ## Project layout
 
@@ -324,7 +332,7 @@ on demand, and an empty workspace opens too).
 | `src/architect-agent.ts` | Persistent Path Architect definition and server tools |
 | `src/backend.ts` | RPC handlers, events, native bridge and activation lifecycle |
 | `src/view/path-hub.ts` | Path Hub: header, roadmap lanes, Architect pane, Node Inspector |
-| `src/view/workspace-pane.ts` | Workspace ledger pop-out pane: flat list, kind icons, notes, links, filing strip (drop/pick), expandable viewer, deletion |
+| `src/view/workspace-pane.ts` | Workspace ledger pop-out pane: flat list, kind icons, notes, links, filing strip (drop/pick), in-place previews, open-in-editor, deletion |
 | `src/view/*` | Architect chat, inspector, error ledger, pivots, dialogs, tool cards |
 | `src/settings.ts` | Artifact defaults, graph-tutoring opt-in, Architect model, safe path deletion |
 | `src/graph-context.ts` | Bounded read-only proposition matching and shared graph-tutoring rules |

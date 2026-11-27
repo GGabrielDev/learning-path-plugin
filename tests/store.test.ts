@@ -485,8 +485,9 @@ test("a workspace materializes lazily on the first item and round-trips", (t) =>
 
   const workspaceDirectory = path.join(dir, WORKSPACES_DIRECTORY, makePath().id);
   assert.deepEqual(fs.readdirSync(workspaceDirectory).sort(), [WORKSPACE_FILES_DIRECTORY, WORKSPACE_MANIFEST_FILE]);
-  assert.deepEqual(fs.readdirSync(path.join(workspaceDirectory, WORKSPACE_FILES_DIRECTORY)), [`${saved.id}.md`]);
-  assert.equal(fs.statSync(path.join(workspaceDirectory, WORKSPACE_FILES_DIRECTORY, `${saved.id}.md`)).mode & 0o077, 0);
+  const expectedFilename = `feynman-notes-${saved.id}.md`;
+  assert.deepEqual(fs.readdirSync(path.join(workspaceDirectory, WORKSPACE_FILES_DIRECTORY)), [expectedFilename]);
+  assert.equal(fs.statSync(path.join(workspaceDirectory, WORKSPACE_FILES_DIRECTORY, expectedFilename)).mode & 0o077, 0);
   assert.equal(store.readWorkspaceItemContent(makePath().id, saved.id), content);
 
   const manifest = JSON.parse(read(dir, path.join(WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_MANIFEST_FILE)));
@@ -636,7 +637,8 @@ test("meta updates touch only title, caption and links", (t) => {
     { kind: "note", title: "Draft", addedBy: "learner", links: [{ to: "n-concept", rel: "grounds" }] },
     "content",
   );
-  const contentBefore = read(dir, path.join(WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY, `${saved.id}.md`));
+  const filesDir = path.join(dir, WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY);
+  const contentBefore = read(dir, path.join(WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY, `draft-${saved.id}.md`));
 
   const updated = store.updateWorkspaceItemMeta(
     makePath().id,
@@ -647,7 +649,10 @@ test("meta updates touch only title, caption and links", (t) => {
   assert.equal(updated.caption, "Second pass");
   assert.equal(updated.addedAt, saved.addedAt);
   assert.equal(updated.sha256, saved.sha256, "content metadata never drifts");
-  assert.equal(read(dir, path.join(WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY, `${saved.id}.md`)), contentBefore);
+  const renamedFile = path.join(filesDir, `renamed-${saved.id}.md`);
+  const strippedBefore = contentBefore.split("\n---\n").at(-1)?.replace(/^\n+/, "");
+  const strippedAfter = fs.readFileSync(renamedFile, "utf8").split("\n---\n").at(-1)?.replace(/^\n+/, "");
+  assert.equal(strippedAfter, strippedBefore, "title renames move the file and preserve content");
   assert.deepEqual(store.workspace(makePath().id)?.items[0]?.links, [{ to: "n-skill", rel: "informs" }]);
 
   const cleared = store.updateWorkspaceItemMeta(makePath().id, saved.id, { caption: null });
@@ -787,7 +792,9 @@ test("refuses symlinked workspace files and directories instead of following the
 
   const outside = path.join(dir, "outside.md");
   fs.writeFileSync(outside, "outside");
-  const contentFile = path.join(dir, WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY, `${saved.id}.md`);
+  const filesDir = path.join(dir, WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY);
+  const entries = fs.readdirSync(filesDir);
+  const contentFile = entries.length === 1 ? path.join(filesDir, entries[0]!) : path.join(filesDir, `${saved.id}.md`);
   fs.rmSync(contentFile);
   fs.symlinkSync(outside, contentFile);
   assert.throws(
@@ -817,4 +824,173 @@ test("refuses symlinked workspace files and directories instead of following the
   fs.mkdirSync(path.join(workspacesLink, "outside-workspaces"));
   fs.symlinkSync(path.join(workspacesLink, "outside-workspaces"), path.join(workspacesLink, WORKSPACES_DIRECTORY));
   assert.throws(() => openLearningPathStore(workspacesLink), /symlinked Learning Path directory/);
+});
+
+test("content files carry readable slugs and frontmatter that round-trips awkward titles", (t) => {
+  const dir = directory(t);
+  const store = openLearningPathStore(dir);
+  store.savePath(makePath());
+  // Quotes, a backslash and unicode: the frontmatter escaping must round-trip.
+  const title = 'He said "hi" \\ and stayed';
+  const content = "# Verbatim body\n";
+  const saved = store.saveWorkspaceItem(
+    makePath().id,
+    { kind: "note", title, addedBy: "learner", links: [{ to: "n-skill", rel: "informs" }] },
+    content,
+  );
+
+  const filesDir = path.join(dir, WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY);
+  const files = fs.readdirSync(filesDir);
+  assert.equal(files.length, 1);
+  assert.match(files[0]!, /^he-said-hi-and-stayed-[0-9a-f-]{36}\.md$/, "the filename is the title's slug plus the id");
+  assert.equal(store.readWorkspaceItemContent(makePath().id, saved.id), content, "content reads verbatim, frontmatter stripped");
+
+  // Frontmatter carries the filing so an external editor can see it.
+  const raw = fs.readFileSync(path.join(filesDir, files[0]!), "utf8");
+  assert.match(raw, /^---\n/);
+  assert.match(raw, new RegExp(`^kind: note$`, "m"));
+  assert.match(raw, /^  - to: n-skill$/m);
+  assert.match(raw, /^    rel: informs$/m);
+  assert.ok(raw.endsWith(content), "the note body follows the frontmatter untouched");
+});
+
+test("syncWorkspaceFromFiles: an external edit to frontmatter and body wins over the manifest", (t) => {
+  const dir = directory(t);
+  const store = openLearningPathStore(dir);
+  store.savePath(makePath());
+  const saved = store.saveWorkspaceItem(
+    makePath().id,
+    { kind: "note", title: "Lecture 7 questions", addedBy: "learner", links: [{ to: "n-concept", rel: "informs" }] },
+    "original body",
+  );
+
+  // The learner edits the file in their own editor: new title, a new link,
+  // and a body edit. The manifest is untouched until the next sync.
+  const filesDir = path.join(dir, WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY);
+  const filename = fs.readdirSync(filesDir)[0]!;
+  fs.writeFileSync(path.join(filesDir, filename), [
+    "---",
+    `id: "${saved.id}"`,
+    "kind: note",
+    'title: "Lecture 7 — open questions"',
+    `addedAt: "${saved.addedAt}"`,
+    "links:",
+    "  - to: n-contrast",
+    "    rel: informs",
+    "  - to: n-missing",
+    "    rel: grounds",
+    "---",
+    "rewritten in my editor",
+    "",
+  ].join("\n"));
+
+  const before = store.workspace(makePath().id);
+  assert.equal(before?.items[0]?.title, "Lecture 7 questions");
+  const result = store.syncWorkspaceFromFiles(makePath().id);
+  assert.equal(result.changed, true);
+  const synced = store.workspace(makePath().id)!.items[0]!;
+  assert.equal(synced.title, "Lecture 7 — open questions", "the external title wins");
+  assert.deepEqual(
+    synced.links,
+    [{ to: "n-contrast", rel: "informs" }],
+    "links follow the file, with the unknown node dropped exactly as at read",
+  );
+  assert.equal(store.readWorkspaceItemContent(makePath().id, saved.id), "rewritten in my editor\n");
+  assert.equal(synced.byteSize, Buffer.byteLength("rewritten in my editor\n", "utf8"));
+  assert.match(synced.sha256 ?? "", /^[0-9a-f]{64}$/, "the index describes the file that is on disk");
+
+  // A second sync with nothing further changed rewrites nothing.
+  const stable = store.syncWorkspaceFromFiles(makePath().id);
+  assert.equal(stable.changed, false, "an unchanged workspace is not rewritten");
+});
+
+test("syncWorkspaceFromFiles: a file written outside the harness materializes as a learner item", (t) => {
+  const dir = directory(t);
+  const store = openLearningPathStore(dir);
+  store.savePath(makePath());
+  const saved = store.saveWorkspaceItem(
+    makePath().id,
+    { kind: "note", title: "In-app note", addedBy: "learner" },
+    "in-app body",
+  );
+  const filesDir = path.join(dir, WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY);
+
+  const externalId = "11111111-2222-3333-4444-555555555555";
+  fs.writeFileSync(path.join(filesDir, `after-the-lecture-${externalId}.md`), [
+    "---",
+    `id: "${externalId}"`,
+    "kind: note",
+    'title: "Notes after DSA lecture 7"',
+    'addedAt: "2026-03-01T10:00:00.000Z"',
+    "links:",
+    "  - to: n-contrast",
+    "    rel: informs",
+    "---",
+    "Why does DFS not give shortest paths?",
+    "",
+  ].join("\n"));
+
+  const result = store.syncWorkspaceFromFiles(makePath().id);
+  assert.equal(result.changed, true);
+  const items = store.workspace(makePath().id)!.items;
+  assert.equal(items.length, 2, "the external file became an item; the in-app note stays");
+  const materialized = items.find((item) => item.id === externalId)!;
+  assert.equal(materialized.title, "Notes after DSA lecture 7");
+  assert.equal(materialized.addedBy, "learner", "material written outside is learner-owned");
+  assert.deepEqual(materialized.links, [{ to: "n-contrast", rel: "informs" }]);
+  assert.equal(store.readWorkspaceItemContent(makePath().id, externalId), "Why does DFS not give shortest paths?\n");
+  assert.equal(items.find((item) => item.id === saved.id)!.title, "In-app note");
+
+  // A file with no frontmatter never syncs: the store never guesses ownership.
+  fs.writeFileSync(path.join(filesDir, "loose-thoughts.md"), "no frontmatter at all\n");
+  const ignored = store.syncWorkspaceFromFiles(makePath().id);
+  assert.equal(ignored.changed, false);
+
+  // Oversize external content never materializes, exactly like in-app writes.
+  fs.writeFileSync(path.join(filesDir, `huge-11111111-2222-3333-4444-555555555556.md`), [
+    "---",
+    'id: "11111111-2222-3333-4444-555555555556"',
+    "kind: note",
+    'title: "Too big"',
+    'addedAt: "2026-03-01T10:00:00.000Z"',
+    "---",
+    "x".repeat(256 * 1024 + 1),
+  ].join("\n"));
+  const refused = store.syncWorkspaceFromFiles(makePath().id);
+  assert.equal(refused.changed, false);
+  assert.equal(store.workspace(makePath().id)!.items.length, 2);
+});
+
+test("syncWorkspaceFromFiles never follows symlinks and never deletes on a missing file", (t) => {
+  const dir = directory(t);
+  const store = openLearningPathStore(dir);
+  store.savePath(makePath());
+  const saved = store.saveWorkspaceItem(
+    makePath().id,
+    { kind: "note", title: "Keep me", addedBy: "learner" },
+    "body",
+  );
+  const filesDir = path.join(dir, WORKSPACES_DIRECTORY, makePath().id, WORKSPACE_FILES_DIRECTORY);
+
+  // A symlinked file is skipped, never followed into the scan.
+  const outside = path.join(dir, "outside.md");
+  fs.writeFileSync(outside, [
+    "---",
+    'id: "99999999-9999-9999-9999-999999999999"',
+    "kind: note",
+    'title: "Through a link"',
+    'addedAt: "2026-03-01T10:00:00.000Z"',
+    "---",
+    "outside body",
+  ].join("\n"));
+  fs.symlinkSync(outside, path.join(filesDir, "linked-99999999-9999-9999-9999-999999999999.md"));
+  const throughLink = store.syncWorkspaceFromFiles(makePath().id);
+  assert.equal(throughLink.changed, false);
+  assert.equal(store.workspace(makePath().id)!.items.length, 1, "nothing materialized through the symlink");
+
+  // A vanished file leaves its manifest entry alone: deletion is a learner decision.
+  fs.rmSync(path.join(filesDir, fs.readdirSync(filesDir).find((name) => name.endsWith(`${saved.id}.md`))!));
+  const afterRemoval = store.syncWorkspaceFromFiles(makePath().id);
+  assert.equal(afterRemoval.changed, false);
+  assert.equal(store.workspace(makePath().id)!.items.length, 1, "the entry survives a missing file");
 });

@@ -27,6 +27,9 @@ function hostWithPath(): { host: TestHost; directory: string } {
   return { host: createHost({ dataDirectory: directory }), directory };
 }
 
+/** A well-formed item id that names no stored item. */
+const UNKNOWN_ITEM_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3309";
+
 function close(host: TestHost, directory: string): void {
   host.close();
   fs.rmSync(directory, { recursive: true, force: true });
@@ -53,14 +56,12 @@ test("workspace.saveNote stores the learner's Markdown verbatim and links it to 
     assert.ok(host.events.some((event) => event.topic === EVENT_WORKSPACE_CHANGED));
 
     // Files are the truth: the content file carries the exact bytes.
-    const contentFile = path.join(
-      directory,
-      WORKSPACES_DIRECTORY,
-      "path-linear-algebra",
-      WORKSPACE_FILES_DIRECTORY,
-      `${saved.item.id}.md`,
-    );
-    assert.equal(fs.readFileSync(contentFile, "utf8"), markdown);
+    const filesDir = path.join(directory, WORKSPACES_DIRECTORY, "path-linear-algebra", WORKSPACE_FILES_DIRECTORY);
+    const entry = fs.readdirSync(filesDir)[0]!;
+    const contentFile = path.join(filesDir, entry);
+    // readWorkspaceItemContent strips frontmatter; raw file has frontmatter + markdown.
+    const raw = fs.readFileSync(contentFile, "utf8");
+    assert.ok(raw.includes(markdown), "the raw file contains the markdown body");
 
     const read = await host.call<{ item: { id: string }; content: string | null }>("workspace.readItem", {
       pathId: "path-linear-algebra",
@@ -548,6 +549,121 @@ test("workspace.openDirectory reveals the path's workspace folder, materializing
       "an unknown path opens nothing",
     );
     assert.equal(host.openedDirectories.length, 1, "a refused path never reaches the opener");
+  } finally {
+    close(host, directory);
+  }
+});
+
+test("workspace.openItem hands the item's raw content file to the OS application the learner picks", async () => {
+  const { host, directory } = hostWithPath();
+  try {
+    const saved = await host.call<{ item: { id: string } }>("workspace.saveNote", {
+      pathId: "path-linear-algebra",
+      title: "Feynman notes on vector spaces",
+      markdown: "the learner's own writing",
+    });
+
+    // The editor gets the file as stored — frontmatter and body — so an
+    // external edit stays resyncable; the OS resolves the application.
+    const result = await host.call<{ file: string }>("workspace.openItem", {
+      pathId: "path-linear-algebra",
+      itemId: saved.item.id,
+    });
+    assert.ok(
+      result.file.startsWith(path.join(directory, WORKSPACES_DIRECTORY)),
+      "the opened file is the item's own content file",
+    );
+    const raw = fs.readFileSync(result.file, "utf8");
+    assert.match(raw, /^---/, "the raw file keeps its frontmatter for the editor");
+    assert.ok(raw.includes("the learner's own writing"));
+    assert.deepEqual(host.openedFiles, [result.file], "the opener runs exactly once for the right file");
+
+    // Refusals never reach the opener: unknown path, unknown item, source.
+    await assert.rejects(
+      host.call("workspace.openItem", { pathId: "path-missing", itemId: saved.item.id }),
+      /Unknown path: path-missing/,
+    );
+    await assert.rejects(
+      host.call("workspace.openItem", { pathId: "path-linear-algebra", itemId: UNKNOWN_ITEM_ID }),
+      /carries no content file to open/,
+    );
+    const filed = await host.call<{ item: { id: string } }>("workspace.saveSource", {
+      pathId: "path-linear-algebra",
+      name: "axioms.md",
+      markdown: "# axioms",
+    });
+    await assert.rejects(
+      host.call("workspace.openItem", { pathId: "path-linear-algebra", itemId: filed.item.id }),
+      /carries no content file to open/,
+      "a source references the global library and owns no file to open",
+    );
+    assert.equal(host.openedFiles.length, 1, "refused calls never reach the opener");
+  } finally {
+    close(host, directory);
+  }
+});
+
+test("workspace.resync re-hydrates the manifest from files the learner edited externally", async () => {
+  const { host, directory } = hostWithPath();
+  try {
+    const saved = await host.call<{ item: { id: string } }>("workspace.saveNote", {
+      pathId: "path-linear-algebra",
+      title: "Lecture 7 questions",
+      markdown: "original body",
+      links: [{ to: "n-concept", rel: "informs" }],
+    });
+
+    // The learner rewrites the file in their own editor while LearnHarness
+    // is open: a new title, a filing under a second node, a body edit.
+    const filesDir = path.join(directory, WORKSPACES_DIRECTORY, "path-linear-algebra", WORKSPACE_FILES_DIRECTORY);
+    const externalId = "44444444-4444-4444-4444-444444444444";
+    fs.writeFileSync(path.join(filesDir, `dsa-open-questions-${externalId}.md`), [
+      "---",
+      `id: "${externalId}"`,
+      "kind: note",
+      'title: "DSA open questions after lecture 7"',
+      'addedAt: "2026-03-01T10:00:00.000Z"',
+      "links:",
+      "  - to: " + "n-skill",
+      "    rel: informs",
+      "---",
+      "Do DAGs admit a shortest-path proof?",
+      "",
+    ].join("\n"));
+    const edited = fs.readdirSync(filesDir).find((name) => name.endsWith(`${saved.item.id}.md`))!;
+    fs.writeFileSync(
+      path.join(filesDir, edited),
+      fs.readFileSync(path.join(filesDir, edited), "utf8").replace("original body", "rewritten mid-session"),
+    );
+
+    const resynced = await host.call<{ workspace: { items: unknown[] }; changed: boolean }>("workspace.resync", {
+      pathId: "path-linear-algebra",
+    });
+    assert.equal(resynced.changed, true);
+    assert.equal(resynced.workspace.items.length, 2, "the external file materialized as an item");
+    assert.ok(host.events.some((event) => event.topic === EVENT_WORKSPACE_CHANGED), "the change is announced");
+
+    const titles = await host.call<{ workspace: { items: { id: string; title: string; addedBy: string }[] } }>(
+      "workspace.resync",
+      { pathId: "path-linear-algebra" },
+    );
+    const materialized = titles.workspace.items.find((item) => item.id === externalId)!;
+    assert.equal(materialized.title, "DSA open questions after lecture 7");
+    assert.equal(materialized.addedBy, "learner");
+
+    // The in-app note's body edit lands too, and a quiet resync writes nothing.
+    const read = await host.call<{ content: string | null }>("workspace.readItem", {
+      pathId: "path-linear-algebra",
+      itemId: saved.item.id,
+    });
+    assert.equal(read.content, "rewritten mid-session");
+    const before = host.events.length;
+    const quiet = await host.call<{ changed: boolean }>("workspace.resync", { pathId: "path-linear-algebra" });
+    assert.equal(quiet.changed, false);
+    assert.equal(host.events.length, before, "an unchanged resync emits nothing");
+
+    await host.call("paths.delete", { pathId: "path-linear-algebra" });
+    assert.equal(fs.existsSync(path.join(directory, WORKSPACES_DIRECTORY, "path-linear-algebra")), false);
   } finally {
     close(host, directory);
   }
