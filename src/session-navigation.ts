@@ -6,27 +6,27 @@
  * the Path Hub consumes it on mount, and a mounted hub receives it live through
  * `subscribePathHubTarget`. The value is navigation intent only, never data.
  */
-export interface PathHubTarget {
-  readonly pathId: string;
-  readonly nodeId: string;
-  readonly architectDraft?: string;
-}
+type NodeTarget = { readonly kind: "node"; readonly pathId: string; readonly nodeId: string };
+export type PathHubTarget = NodeTarget | { readonly kind: "chat-draft"; readonly draft: string };
 
 let pending: PathHubTarget | null = null;
 const listeners = new Set<(target: PathHubTarget) => void>();
 
 /** Record where to go and notify a hub that is already mounted. */
-export function requestPathHubTarget(target: PathHubTarget): void {
+function requestTarget(target: PathHubTarget): void {
   pending = target;
   for (const listener of [...listeners]) {
     try { listener(target); } catch { /* isolate listeners */ }
   }
 }
 
-export function requestPathHubDraft(draft: string): void {
-  requestPathHubTarget({ pathId: "", nodeId: "", architectDraft: draft });
+export function requestPathHubTarget(target: Omit<NodeTarget, "kind">): void {
+  requestTarget({ kind: "node", ...target });
 }
 
+export function requestPathHubDraft(draft: string): void {
+  requestTarget({ kind: "chat-draft", draft });
+}
 
 /** Take (and clear) the pending target once; a later mount does not re-navigate. */
 export function consumePathHubTarget(): PathHubTarget | null {

@@ -17,7 +17,9 @@
  * and no tool writes after the signal aborts.
  */
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { ChatPathPreview } from "./session-types.ts";
+import { CHAT_PATH_ARCHITECT_ID, reviewableChatPath } from "./chat-to-path.ts";
 import type {
   ModelCatalogResponse,
   PluginAgentDefinition,
@@ -26,6 +28,8 @@ import type {
 } from "learnharness-plugin-api";
 import {
   ARCHITECT_DEFINITION_ID,
+  approveChatPathProposal,
+  buildArchitectDefinition,
   registerArchitect,
 } from "./architect-agent.ts";
 import type { ArchitectRegistration } from "./architect-agent.ts";
@@ -428,6 +432,7 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
   };
   const createRequests = new Map<string, string>();
   let architect: ArchitectRegistration | null = null;
+  let unregisterChatArchitect: (() => void) | null = null;
   // A settings model change saved while an Architect conversation was running;
   // applied once no Architect conversation is running.
   let pendingModel: ArchitectModelConfig | null = null;
@@ -449,6 +454,8 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
     latestSnapshots.clear();
     architect?.unregister();
     architect = null;
+    unregisterChatArchitect?.();
+    unregisterChatArchitect = null;
     for (const dispose of disposers.reverse()) dispose();
   };
   ctx.cleanup(cleanup);
@@ -476,10 +483,22 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
   ctx.signal.addEventListener("abort", cancelRuns, { once: true });
   ctx.cleanup(() => ctx.signal.removeEventListener("abort", cancelRuns));
 
+  const releaseChatArchitect = (): void => {
+    unregisterChatArchitect?.();
+    unregisterChatArchitect = null;
+  };
+
+  const registerChatArchitect = (model: ArchitectModelConfig): void => {
+    unregisterChatArchitect ??= ctx.agents.register(buildArchitectDefinition(ctx, model, {
+      store, activeChatId: () => null,
+    }, true));
+  };
+
   const registerModel = (model: ArchitectModelConfig): void => {
     pendingModel = null;
     architect?.unregister();
     architect = null;
+    releaseChatArchitect();
     const registration = registerArchitect(ctx, model, {
       store,
       activeChatId: () => activeChatId,
@@ -487,10 +506,12 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
         emit(EVENT_PATHS_CHANGED, { id: path.id, created, updatedAt: path.updatedAt }),
     });
     try {
+      if (ctx.agents.list().some((chat) => chat.definitionId === CHAT_PATH_ARCHITECT_ID)) registerChatArchitect(model);
       const saved = store.architectModel();
       if (!saved || !sameModel(saved, model)) store.saveArchitectModel(model);
     } catch (error) {
       registration.unregister();
+      releaseChatArchitect();
       throw error;
     }
     architect = registration;
@@ -504,7 +525,7 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
       return (
         ctx.agents
           .list()
-          .find((record) => record.definitionId === ARCHITECT_DEFINITION_ID && record.status === "running")
+          .find((record) => (record.definitionId === ARCHITECT_DEFINITION_ID || record.definitionId === CHAT_PATH_ARCHITECT_ID) && record.status === "running")
           ?.id ?? null
       );
     } catch {
@@ -1291,22 +1312,31 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
       throw new Error("Only Teaching chats can be used to create a Learning Path.");
     }
     const listed = ctx.learning.listSessions().find((session) => session.id === chatId);
-    const labels = (record.tree?.nodes ?? [])
-      .map((node) => typeof node.title === "string" ? node.title.trim() : "")
-      .filter(Boolean)
-      .slice(0, 20);
-    const joined = labels.join(" · ");
-    const outline = joined.length > 2_000 ? `${joined.slice(0, 1_997)}…` : joined;
+    const nodes = record.tree?.nodes ?? [];
+    let outline = "";
+    let truncated = nodes.length > 20;
+    for (const node of nodes.slice(0, 20)) {
+      const label = node.title.trim();
+      if (!label) continue;
+      const separator = outline ? " · " : "";
+      const room = 2_000 - outline.length;
+      if (separator.length + label.length > room) {
+        if (room > separator.length) outline += separator + label.slice(0, room - separator.length);
+        truncated = true;
+        break;
+      }
+      outline += separator + label;
+    }
+    const title = record.title.length > 200 ? `${record.title.slice(0, 199)}…` : record.title;
+    const revision = createHash("sha256").update(JSON.stringify([
+      chatId, record.updatedAt, record.tree?.version, title, outline, truncated,
+    ])).digest("hex");
     return {
-      chatId,
-      title: record.title,
-      kind: "teaching" as const,
-      busy: listed?.busy === true,
-      updatedAt: record.updatedAt,
-      tree: record.tree ? { labels, truncated: labels.length < (record.tree.nodes?.length ?? 0) || joined.length > 2_000 } : null,
-      outline,
-    };
+      title, busy: listed?.busy === true || listed?.compacting === true,
+      outline: outline || null, truncated, revision,
+    } satisfies ChatPathPreview;
   });
+
   /** Native sessions that can be attached; `linked` makes duplicates obvious. */
   handle("sessions.available", () => {
     const sessions = ctx.learning.listSessions().map((chat) => {
@@ -1332,7 +1362,6 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
     });
     return { sessions };
   });
-
 
   /** Existence of every linked chat, for missing/relink UI in the Path Hub. */
   handle("sessions.status", (input) => {
@@ -1387,8 +1416,13 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
     if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
     ensureRegistered(model);
     debug("architect.create.model", { provider: model.provider, id: model.id });
-    const conversation = ctx.agents.create(ARCHITECT_DEFINITION_ID);
-    activeChatId = conversation.id;
+    const chatHandoff = value.origin === "teaching-chat";
+    if (chatHandoff) {
+      if (store.settings().chatToPathEnabled !== true) throw new Error("Teaching-chat path creation is disabled.");
+      registerChatArchitect(model);
+    }
+    const conversation = ctx.agents.create(chatHandoff ? CHAT_PATH_ARCHITECT_ID : ARCHITECT_DEFINITION_ID);
+    if (!chatHandoff) activeChatId = conversation.id;
     watch(conversation.id);
     if (requestId) {
       createRequests.set(requestId, conversation.id);
@@ -1438,7 +1472,7 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
     const text = readText(value.text, "text", { max: MAX_MESSAGE_CHARS });
     if (text.trim().length === 0) throw new Error("text must not be blank.");
     const requestId = readRequestId(value.requestId);
-    activeChatId = id;
+    if (ctx.agents.get(id).definitionId === ARCHITECT_DEFINITION_ID) activeChatId = id;
     watch(id);
     debug("architect.send.request", { id, requestId, characters: text.length });
     const conversation = await ctx.agents.send(id, text, { requestId, purpose: "user" });
@@ -1451,6 +1485,18 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
     return { conversation };
   });
 
+  handle("architect.approveChatPath", (input) => {
+    const value = object(input, "architect.approveChatPath");
+    const id = readText(value.id, "id", { max: 128 });
+    const toolCallId = readText(value.toolCallId, "toolCallId", { max: 256 });
+    const review = reviewableChatPath(ctx.agents.get(id));
+    if (review?.toolCallId !== toolCallId) throw new Error("No current Architect proposal matches that approval.");
+    if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
+    const path = approveChatPathProposal(store, id, review.proposal);
+    emit(EVENT_PATHS_CHANGED, { id: path.id, created: review.proposal.baseRevision === null, updatedAt: path.updatedAt });
+    return { path };
+  });
+
   handle("architect.abort", (input) => {
     if (ctx.signal.aborted) throw new Error("The Learning Path plugin is shutting down.");
     const value = object(input, "architect.abort");
@@ -1459,7 +1505,7 @@ export function activate(ctx: PluginBackendContext, options: BackendActivationOp
     if (value.requestId !== undefined) readRequestId(value.requestId);
     ctx.agents.abort(id);
     const conversation = ctx.agents.get(id);
-    activeChatId = id;
+    if (conversation.definitionId === ARCHITECT_DEFINITION_ID) activeChatId = id;
     watch(id);
     emit(EVENT_ARCHITECT_CHANGED, {
       id,

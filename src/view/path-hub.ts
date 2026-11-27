@@ -865,13 +865,20 @@ export function mountPathHub(
     }
   }
 
+  function openChatDraft(draft: string): void {
+    refineOpen = true;
+    pane.startNew(draft);
+    renderHeader();
+  }
+
   async function refreshAll(): Promise<void> {
     if (disposed || signal.aborted) return;
     const token = ++loadToken;
     // A top-bar navigation may have arrived before this mount finished loading.
     const target = consumePathHubTarget();
-    const architectDraft = target?.architectDraft;
-    if (target && target.pathId) {
+    if (target?.kind === "chat-draft") openChatDraft(target.draft);
+    if (target?.kind === "node") {
+      nodeDeselected = false;
       selectedPathId = target.pathId;
       selectedNodeId = target.nodeId;
     }
@@ -911,10 +918,6 @@ export function mountPathHub(
       showError(null);
       renderAll();
 
-      if (architectDraft !== undefined) {
-        refineOpen = true;
-        pane.startNew(architectDraft);
-      }
       if (path?.architectChatId && !pane.isNewDraft() && path.id !== autoLoadedPathId) {
         autoLoadedPathId = path.id;
         if (pane.conversationId() !== path.architectChatId) {
@@ -1369,10 +1372,8 @@ export function mountPathHub(
   const offNavigation = subscribePathHubTarget((target) => {
     if (signal.aborted || disposed) return;
     consumePathHubTarget();
-    if (target.architectDraft !== undefined) {
-      refineOpen = true;
-      pane.startNew(target.architectDraft);
-      renderHeader();
+    if (target.kind === "chat-draft") {
+      openChatDraft(target.draft);
       return;
     }
     nodeDeselected = false;

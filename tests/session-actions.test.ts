@@ -49,7 +49,6 @@ test("registers both actions and explicit top-bar placements for teaching and pr
     assert.deepEqual(
       fixture.actions.map((entry) => [entry.id, entry.name]),
       [
-        ["lp-create-path-from-chat", "Create a Path from This Chat…"],
         ["lp-open-parent-learning-path", "Open Parent Learning Path"],
         ["lp-attach-session-to-path", "Attach Session to Path…"],
       ],
@@ -86,7 +85,7 @@ test("Open Parent Learning Path targets the linked node and opens the hub", asyn
     } finally {
       off();
     }
-    assert.deepEqual(targets, [{ pathId: path.id, nodeId: "n-concept" }]);
+    assert.deepEqual(targets, [{ kind: "node", pathId: path.id, nodeId: "n-concept" }]);
     assert.deepEqual(fixture.openedViews, ["paths"]);
 
     // An unlinked chat still opens the hub; it just has no node to preselect.
