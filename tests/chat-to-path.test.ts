@@ -22,64 +22,53 @@ function attachContext(kind: "teaching" | "practice"): PluginActionContext {
   return { placement: "top-bar", surface: "session", sessionId: chat.id, kind, surfaceTarget: {} as never, view: {} as never };
 }
 
-test("Teaching-only Attach choice reads current settings; missing and pending outlines require a summary or cancellation", async () => {
-  const fixture = createViewFixture();
+test("unified Learning Path action keeps create disabled until a ready unlinked Teaching chat", async () => {
+  const fixture = createViewFixture({ settings: { artifactDefaults: {}, chatToPathEnabled: true } });
   const backend = createHost({ chats: [chat] });
   try {
-    const call = fixture.context.call.bind(fixture.context);
-    fixture.context.call = (name, input) => name === "sessions.toPathPreview" || name === "settings.get"
-      ? backend.call(name, input) : call(name, input);
+    const originalCall = fixture.context.call.bind(fixture.context);
+    fixture.context.call = (name, input) => name === "sessions.toPathPreview"
+      ? backend.call(name, input) : originalCall(name, input);
     registerSessionActions(fixture.context);
-    const attach = fixture.actions.find((entry) => entry.id === "lp-attach-session-to-path")!;
+    const action = fixture.actions.find((entry) => entry.id === "lp-learning-path")!;
+    const view = { busy: false, status: "ready" as const, phase: "teach" as const };
+    const open = async (kind: "teaching" | "practice", nextView: { busy: boolean; status: "ready"; phase: "teach" | "plan" } = view) => {
+      await action.run({ placement: "top-bar", surface: "session", sessionId: chat.id, kind, surfaceTarget: {} as never, view: nextView as never });
+      await fixture.flush();
+    };
     const button = (label: string) => fixture.all("mountButton").findLast((entry) => !entry.disposed && entry.props.label === label);
-    const openAttach = async (kind: "teaching" | "practice") => { await attach.run(attachContext(kind)); await fixture.flush(); };
-    const openReview = async () => { await button("Create a Path from This Chat…")!.props.onClick(); await fixture.flush(); };
-    const review = () => fixture.findLast("openDialog", (entry) => !entry.disposed).contentContainer!;
 
-    await openAttach("teaching");
-    assert.equal(button("Create a Path from This Chat…"), undefined);
+    await open("practice");
+    assert.equal(button("Create a Path from This Lesson…")!.props.disabled, true);
     fixture.findLast("openDialog", (entry) => !entry.disposed).handle.dispose();
-    await backend.call("settings.save", settings);
-    await openAttach("practice");
-    assert.equal(button("Create a Path from This Chat…"), undefined);
+    await open("teaching", { ...view, phase: "plan" });
+    assert.equal(button("Create a Path from This Lesson…")!.props.disabled, true);
     fixture.findLast("openDialog", (entry) => !entry.disposed).handle.dispose();
-    await openAttach("teaching");
-    assert.match(review().textContent ?? "", /No learning paths/);
-    await openReview();
-    assert.match(review().textContent ?? "", /No saved plan outline is ready/);
-    assert.equal(button("Review in Path Architect")!.props.disabled, true);
-    await button("Cancel")!.props.onClick();
-    assert.equal(consumePathHubTarget(), null);
-    assert.deepEqual(fixture.openedViews, []);
-
-    backend.addChat({ ...chat, tree: { version: 0, nodes: [], edges: [] } });
-    await openAttach("teaching");
-    await openReview();
-    const summary = review().querySelector("textarea")!;
-    summary.value = "I worked through address translation.";
-    fire(summary, "input");
-    const confirm = button("Review in Path Architect")!;
-    assert.equal(confirm.props.disabled, false);
-    backend.addChat({ ...chat, tree: { version: 1, nodes: [{ id: "one", title: "New background" }], edges: [] } });
-    await confirm.props.onClick();
-    assert.match(review().textContent ?? "", /has changed/);
-    assert.equal(consumePathHubTarget(), null);
-    await button("Cancel")!.props.onClick();
-
-    await openAttach("teaching");
-    await openReview();
-    await button("Review in Path Architect")!.props.onClick();
-    const unmounted = mountPathHub(fixture.context, fixture.root, fixture.context.signal);
+    await open("teaching");
+    assert.equal(button("Create a Path from This Lesson…")!.props.disabled, false);
+    await button("Create a Path from This Lesson…")!.props.onClick();
     await fixture.flush();
-    assert.match(fixture.find("mountStandardComposer").props.composer.value, /New background/);
-    assert.deepEqual(fixture.openedViews, ["paths"]);
-    assert.deepEqual(fixture.calls.filter((entry) => /architect\.(create|send)|sessions\.link|paths\.save/.test(entry.name)), []);
-    assert.equal(backend.records.size, 0);
-    unmounted();
+    assert.equal(fixture.findLast("openDialog", (entry) => !entry.disposed).props.title, "Create a Learning Path from This Chat");
+    assert.equal(consumePathHubTarget(), null);
   } finally {
     clearPathHubTarget();
     fixture.restore();
     backend.close();
+  }
+});
+
+test("unified Learning Path action greys out create for an already-linked session", async () => {
+  const fixture = createViewFixture({ paths: [makePath()], settings });
+  try {
+    registerSessionActions(fixture.context);
+    const action = fixture.actions.find((entry) => entry.id === "lp-learning-path")!;
+    await action.run({ placement: "top-bar", surface: "session", sessionId: "chat-1", kind: "teaching", surfaceTarget: {} as never, view: { busy: false, status: "ready", phase: "teach" } as never });
+    await fixture.flush();
+    const create = fixture.all("mountButton").findLast((entry) => entry.props.label === "Create a Path from This Lesson…");
+    assert.equal(create?.props.disabled, true);
+    assert.match(fixture.root.textContent ?? "", /already linked/);
+  } finally {
+    fixture.restore();
   }
 });
 

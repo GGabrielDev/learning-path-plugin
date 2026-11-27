@@ -9,7 +9,7 @@
 import type { PluginFrontendContext, PluginWidgetHandle } from "learnharness-plugin-api";
 import type { ChildSessionKind, LearningPath, PathNode, PluginSettings } from "../domain.ts";
 import type { SessionLauncher } from "../session-launcher.ts";
-import { requestPathHubDraft } from "../session-navigation.ts";
+import { requestPathHubDraft, requestPathHubTarget } from "../session-navigation.ts";
 import { CHAT_PATH_SUMMARY_MAX } from "../session-types.ts";
 import type {
   AvailableSession,
@@ -82,6 +82,129 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export interface LearningPathMenuOptions {
+  readonly launcher: SessionLauncher;
+  readonly chatId: string;
+  readonly kind: ChildSessionKind;
+  /** Heuristic from the fresh native action context, never a completion claim. */
+  readonly likelyReady: boolean;
+  readonly signal: AbortSignal;
+}
+
+/** Open the compact session menu used by the single native Learning Path action. */
+export function openLearningPathMenuDialog(
+  ctx: PluginFrontendContext,
+  options: LearningPathMenuOptions,
+): PluginWidgetHandle<{ title: string; content: unknown }> | null {
+  let dialog: PluginWidgetHandle<never> | null = null;
+  const close = (): void => {
+    const current = dialog;
+    dialog = null;
+    current?.dispose();
+  };
+  dialog = ctx.ui.openDialog({
+    title: "Learning Path",
+    content: async (container: HTMLElement, contentSignal: AbortSignal) => {
+      const document = container.ownerDocument;
+      const handles: PluginWidgetHandle<unknown>[] = [];
+      const root = element(document, "div", "lp-session-dialog");
+      const loading = element(document, "p", "lp-muted", "Loading Learning Path options…");
+      const error = element(document, "p", "lp-dialog-error");
+      error.setAttribute("role", "alert");
+      error.hidden = true;
+      root.append(loading, error);
+      container.append(root);
+      const live = (): boolean => !contentSignal.aborted && !options.signal.aborted;
+      const cleanup = (): void => {
+        for (const handle of handles.reverse()) handle.dispose();
+        handles.length = 0;
+        root.remove();
+      };
+      try {
+        const [settingsResult, parentResult] = await Promise.all([
+          ctx.call<{ settings: PluginSettings }>("settings.get"),
+          ctx.call<SessionParentResult>("sessions.forChat", { chatId: options.chatId }),
+        ]);
+        if (!live()) return cleanup;
+        loading.remove();
+        const linked = parentResult.link !== null;
+        const enabled = settingsResult.settings.chatToPathEnabled === true;
+        const ready = options.kind === "teaching" && options.likelyReady;
+        const createDisabled = linked || !enabled || !ready;
+
+        root.append(element(document, "p", "lp-muted", ready
+          ? "This Teaching lesson appears ready for a Learning Path handoff."
+          : "Create-from-lesson is available only for an idle Teaching lesson in the teaching phase."));
+        if (linked) {
+          root.append(element(document, "p", "lp-muted", `This session is already linked to "${parentResult.link!.nodeTitle}" in "${parentResult.link!.pathTitle}".`));
+        }
+        if (!enabled) {
+          root.append(element(document, "p", "lp-muted", "Create-from-lesson is disabled in Learning Path settings."));
+        }
+
+        const parentHost = element(document, "span", "lp-button-host");
+        const attachHost = element(document, "span", "lp-button-host");
+        const createHost = element(document, "span", "lp-button-host");
+        root.append(parentHost, attachHost, createHost);
+        handles.push(ctx.ui.mountButton(parentHost, {
+          label: "Open Parent Learning Path",
+          variant: "outline",
+          size: "sm",
+          onClick: async () => {
+            try {
+              const result = await ctx.call<SessionParentResult>("sessions.forChat", { chatId: options.chatId });
+              if (!live()) return;
+              if (result.link) requestPathHubTarget({ pathId: result.link.pathId, nodeId: result.link.nodeId });
+              ctx.app.openView("paths");
+              close();
+            } catch (problem) {
+              if (live()) {
+                error.textContent = `Could not open the parent path: ${describeError(problem)}`;
+                error.hidden = false;
+              }
+            }
+          },
+        }, { signal: contentSignal }));
+        handles.push(ctx.ui.mountButton(attachHost, {
+          label: "Attach Session to Path…",
+          variant: "outline",
+          size: "sm",
+          onClick: () => {
+            if (!live()) return;
+            close();
+            openAttachSessionDialog(ctx, {
+              launcher: options.launcher,
+              chatId: options.chatId,
+              kind: options.kind,
+              signal: options.signal,
+            });
+          },
+        }, { signal: contentSignal }));
+        handles.push(ctx.ui.mountButton(createHost, {
+          label: "Create a Path from This Lesson…",
+          variant: "default",
+          size: "sm",
+          disabled: createDisabled,
+          title: createDisabled ? "This option requires an unlinked, enabled, idle Teaching lesson." : undefined,
+          onClick: () => {
+            if (!live() || createDisabled) return;
+            close();
+            openCreatePathFromChatDialog(ctx, options.chatId, options.signal);
+          },
+        }, { signal: contentSignal }));
+        return cleanup;
+      } catch (problem) {
+        if (!live()) return cleanup;
+        loading.remove();
+        error.textContent = `Could not load Learning Path options: ${describeError(problem)}`;
+        error.hidden = false;
+        return cleanup;
+      }
+    },
+  }, { signal: options.signal }) as PluginWidgetHandle<never>;
+  return dialog as unknown as PluginWidgetHandle<{ title: string; content: unknown }> | null;
+}
+
 /** Attach the session the action was invoked from to a learner-chosen node. */
 export function openAttachSessionDialog(
   ctx: PluginFrontendContext,
@@ -117,26 +240,6 @@ export function openAttachSessionDialog(
           handles.length = 0;
           root.remove();
         };
-
-        const creationChoice = async (): Promise<void> => {
-          if (options.kind !== "teaching") return;
-          // If the experiment's settings are unavailable, ordinary attachment still works.
-          const result = await ctx.call<{ settings: PluginSettings }>("settings.get").catch(() => null);
-          if (contentSignal.aborted || options.signal.aborted || result?.settings.chatToPathEnabled !== true) return;
-          const host = element(document, "span", "lp-button-host");
-          root.append(host);
-          handles.push(ctx.ui.mountButton(host, {
-            label: "Create a Path from This Chat…",
-            variant: "outline",
-            size: "sm",
-            onClick: () => {
-              if (contentSignal.aborted || options.signal.aborted) return;
-              close();
-              openCreatePathFromChatDialog(ctx, options.chatId, options.signal);
-            },
-          }, { signal: contentSignal }));
-        };
-        void creationChoice();
 
         try {
           const [listed, parent] = await Promise.all([
